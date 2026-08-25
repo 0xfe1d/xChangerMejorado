@@ -1,0 +1,232 @@
+---
+/**
+ * Ventana de chat reutilizable para ofertas y tickets.
+ * mode: 'offer' | 'ticket'
+ * roomId: offerId o ticketId
+ * currentUserId: ID del usuario autenticado
+ * messages: mensajes iniciales cargados en SSR
+ * canClose: si se muestra el botón de cerrar la sala/ticket
+ */
+interface Message {
+  id: string;
+  content: string;
+  timestamp: string;
+  author: { id: string; name: string };
+}
+
+interface Props {
+  mode: 'offer' | 'ticket';
+  roomId: string;
+  currentUserId: string;
+  currentUserName: string;
+  messages: Message[];
+  canClose?: boolean;
+  isClosed?: boolean;
+}
+
+const {
+  mode,
+  roomId,
+  currentUserId,
+  currentUserName,
+  messages,
+  canClose = false,
+  isClosed = false,
+} = Astro.props;
+---
+
+<div
+  class="flex h-[600px] flex-col rounded-2xl border border-gray-200 bg-white shadow-sm"
+  id="chat-window"
+  data-mode={mode}
+  data-room-id={roomId}
+  data-current-user-id={currentUserId}
+  data-current-user-name={currentUserName}
+>
+  <!-- Cabecera -->
+  <div class="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+    <h2 class="text-sm font-semibold text-gray-900">
+      {mode === 'offer' ? 'Chat de intercambio' : 'Ticket de soporte'}
+    </h2>
+    {canClose && (
+      <button
+        id="close-chat-btn"
+        type="button"
+        class="text-xs font-medium text-red-500 hover:text-red-700 hover:underline"
+      >
+        Cerrar {mode === 'offer' ? 'chat' : 'ticket'}
+      </button>
+    )}
+  </div>
+
+  <!-- Área de mensajes -->
+  <div id="messages-area" class="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+    {messages.map((m) => {
+      const isOwn = m.author.id === currentUserId;
+      return (
+        <div class={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
+          <div class={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col gap-0.5`}>
+            <span class="text-xs text-gray-400 px-1">
+              {isOwn ? 'Tú' : m.author.name}
+            </span>
+            <div
+              class={`rounded-2xl px-4 py-2 text-sm leading-relaxed ${
+                isOwn
+                  ? 'rounded-tr-sm bg-brand text-white'
+                  : 'rounded-tl-sm bg-gray-100 text-gray-800'
+              }`}
+            >
+              {m.content}
+            </div>
+            <span class="text-xs text-gray-300 px-1">
+              {new Date(m.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          </div>
+        </div>
+      );
+    })}
+    <!-- Ancla para auto-scroll -->
+    <div id="messages-end"></div>
+  </div>
+
+  <!-- Área de estado (desconectado / sala cerrada) -->
+  <div id="chat-status-bar" class={`border-t border-gray-100 bg-yellow-50 px-5 py-2 text-xs text-yellow-700 ${isClosed ? '' : 'hidden'}`}>
+    Esta conversación está cerrada. No se pueden enviar más mensajes.
+  </div>
+
+  <!-- Input de mensaje -->
+  <div id="input-area" class={`border-t border-gray-100 p-4 ${isClosed ? 'hidden' : ''}`}>
+    <form id="message-form" class="flex items-end gap-3" novalidate>
+      <textarea
+        id="message-input"
+        rows="2"
+        maxlength="2000"
+        placeholder="Escribe un mensaje…"
+        class="input-field flex-1 resize-none"
+        aria-label="Mensaje"
+      ></textarea>
+      <button
+        id="send-btn"
+        type="submit"
+        class="btn-primary h-10 px-5"
+        aria-label="Enviar mensaje"
+      >
+        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+        </svg>
+      </button>
+    </form>
+  </div>
+</div>
+
+<script>
+  import { connectSocket } from '../../lib/socket';
+  import { api, ApiError } from '../../lib/api';
+
+  const chatEl        = document.getElementById('chat-window')!;
+  const messagesArea  = document.getElementById('messages-area')!;
+  const messagesEnd   = document.getElementById('messages-end')!;
+  const form          = document.getElementById('message-form') as HTMLFormElement;
+  const input         = document.getElementById('message-input') as HTMLTextAreaElement;
+  const sendBtn       = document.getElementById('send-btn') as HTMLButtonElement;
+  const closeChatBtn  = document.getElementById('close-chat-btn') as HTMLButtonElement | null;
+  const statusBar     = document.getElementById('chat-status-bar')!;
+  const inputArea     = document.getElementById('input-area')!;
+
+  const mode          = chatEl.dataset.mode as 'offer' | 'ticket';
+  const roomId        = chatEl.dataset.roomId!;
+  const currentUserId = chatEl.dataset.currentUserId!;
+
+  const joinEvent    = mode === 'offer' ? 'join_offer_room'    : 'join_ticket_room';
+  const receiveEvent = mode === 'offer' ? 'new_offer_message'   : 'new_ticket_message';
+  const closedEvent  = mode === 'offer' ? 'offer_closed'        : 'ticket_closed';
+  const closeApiPath = mode === 'offer' ? `/offers/${roomId}/close` : `/tickets/${roomId}/close`;
+
+  const socket = connectSocket();
+
+  // Unirse a la sala
+  socket.emit(joinEvent, { [`${mode}Id`]: roomId });
+
+  // Desplazar al último mensaje
+  function scrollToBottom() {
+    messagesEnd.scrollIntoView({ behavior: 'smooth' });
+  }
+  scrollToBottom();
+
+  // Renderizar un mensaje nuevo
+  function appendMessage(msg: {
+    content: string;
+    timestamp: string;
+    author: { id: string; name: string };
+  }) {
+    const isOwn = msg.author.id === currentUserId;
+    const time  = new Date(msg.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+
+    const wrapper = document.createElement('div');
+    wrapper.className = `flex ${isOwn ? 'justify-end' : 'justify-start'}`;
+    wrapper.innerHTML = `
+      <div class="max-w-[75%] flex flex-col gap-0.5 ${isOwn ? 'items-end' : 'items-start'}">
+        <span class="text-xs text-gray-400 px-1">${isOwn ? 'Tú' : msg.author.name}</span>
+        <div class="rounded-2xl px-4 py-2 text-sm leading-relaxed ${
+          isOwn ? 'rounded-tr-sm bg-brand text-white' : 'rounded-tl-sm bg-gray-100 text-gray-800'
+        }">
+          ${msg.content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}
+        </div>
+        <span class="text-xs text-gray-300 px-1">${time}</span>
+      </div>
+    `;
+    // Insertar antes del ancla
+    messagesArea.insertBefore(wrapper, messagesEnd);
+    scrollToBottom();
+  }
+
+  // Recibir mensajes en tiempo real
+  socket.on(receiveEvent, appendMessage);
+
+  // La sala fue cerrada
+  socket.on(closedEvent, () => {
+    statusBar.classList.remove('hidden');
+    inputArea.classList.add('hidden');
+  });
+
+  // Enviar mensaje
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const content = input.value.trim();
+    if (!content) return;
+
+    sendBtn.disabled = true;
+    try {
+      // Enviamos vía API REST (el backend emite vía socket a todos en la sala)
+      await api.post(`/${mode === 'offer' ? 'offers' : 'tickets'}/${roomId}/messages`, { content });
+      input.value = '';
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : 'Error al enviar');
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  });
+
+  // Enviar con Enter (Shift+Enter → salto de línea)
+  input.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  // Cerrar chat/ticket
+  closeChatBtn?.addEventListener('click', async () => {
+    if (!confirm(`¿Cerrar ${mode === 'offer' ? 'el chat de intercambio' : 'el ticket'}? Esta acción no se puede deshacer.`)) return;
+    closeChatBtn.disabled = true;
+    try {
+      await api.patch(closeApiPath);
+      statusBar.classList.remove('hidden');
+      inputArea.classList.add('hidden');
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : 'Error al cerrar');
+      closeChatBtn.disabled = false;
+    }
+  });
+</script>

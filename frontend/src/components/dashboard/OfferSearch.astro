@@ -1,0 +1,234 @@
+---
+// Props: lista de asignaturas del usuario para poblar el primer select
+interface Asignatura {
+  id: string;
+  nombre: string;
+  codigo: string;
+  grupos: Array<{ id: string; nombre: string }>;
+}
+
+interface Props {
+  asignaturas: Asignatura[];
+}
+
+const { asignaturas } = Astro.props;
+---
+
+<section class="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+  <h2 class="mb-4 text-lg font-semibold text-gray-900">Buscar intercambio de grupo</h2>
+
+  <div id="offer-search-results" class="mb-4 hidden"></div>
+
+  <div class="grid gap-4 sm:grid-cols-3">
+    <!-- Asignatura -->
+    <div>
+      <label for="search-asignatura" class="mb-1.5 block text-sm font-medium text-gray-700">
+        Asignatura
+      </label>
+      <select id="search-asignatura" class="input-field">
+        <option value="">Selecciona una asignatura…</option>
+        {asignaturas.map((a) => (
+          <option value={a.id} data-grupos={JSON.stringify(a.grupos)}>
+            {a.codigo} — {a.nombre}
+          </option>
+        ))}
+      </select>
+    </div>
+
+    <!-- Grupo que tengo -->
+    <div>
+      <label for="search-grupo-actual" class="mb-1.5 block text-sm font-medium text-gray-700">
+        Grupo que tengo
+      </label>
+      <select id="search-grupo-actual" disabled class="input-field disabled:opacity-50">
+        <option value="">Selecciona primero una asignatura…</option>
+      </select>
+    </div>
+
+    <!-- Grupo que deseo -->
+    <div>
+      <label for="search-grupo-deseado" class="mb-1.5 block text-sm font-medium text-gray-700">
+        Grupo que deseo
+      </label>
+      <select id="search-grupo-deseado" disabled class="input-field disabled:opacity-50">
+        <option value="">Selecciona primero una asignatura…</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="mt-4 flex items-center gap-3">
+    <button id="search-btn" type="button" class="btn-primary">
+      Buscar
+    </button>
+    <button id="create-offer-btn" type="button" class="btn-secondary hidden">
+      Publicar mi oferta
+    </button>
+  </div>
+
+  <!-- Resultados de búsqueda -->
+  <div id="results-container" class="mt-6 hidden">
+    <h3 class="mb-3 text-sm font-semibold text-gray-700">Resultados</h3>
+    <div id="results-list" class="space-y-3"></div>
+  </div>
+
+  <!-- Modal crear oferta -->
+  <div id="create-offer-modal" role="dialog" aria-modal="true" aria-labelledby="create-offer-title"
+       class="fixed inset-0 z-50 hidden items-center justify-center bg-black/50 p-4">
+    <div class="w-full max-w-sm rounded-2xl bg-white p-8 shadow-xl">
+      <h3 id="create-offer-title" class="mb-2 text-lg font-bold text-gray-900">Publicar oferta</h3>
+      <p class="mb-6 text-sm text-gray-500">
+        Se publicará una oferta con los parámetros que has buscado.
+      </p>
+      <div id="create-offer-error" class="mb-4 hidden rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"></div>
+      <div class="flex gap-3">
+        <button id="create-offer-confirm" type="button" class="btn-primary flex-1">Publicar</button>
+        <button id="create-offer-cancel" type="button" class="btn-secondary flex-1">Cancelar</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  import { api, ApiError } from '../../lib/api';
+
+  interface Offer {
+    id: string;
+    status: string;
+    grupoActual: { id: string; nombre: string };
+    grupoDeseado: { id: string; nombre: string };
+    asignatura: { id: string; nombre: string; codigo: string };
+    user: { id: string; name: string; email: string };
+  }
+
+  const asignaturaSelect   = document.getElementById('search-asignatura') as HTMLSelectElement;
+  const grupoActualSelect  = document.getElementById('search-grupo-actual') as HTMLSelectElement;
+  const grupoDeseadoSelect = document.getElementById('search-grupo-deseado') as HTMLSelectElement;
+  const searchBtn          = document.getElementById('search-btn') as HTMLButtonElement;
+  const createOfferBtn     = document.getElementById('create-offer-btn')!;
+  const resultsContainer   = document.getElementById('results-container')!;
+  const resultsList        = document.getElementById('results-list')!;
+  const modal              = document.getElementById('create-offer-modal')!;
+  const createConfirm      = document.getElementById('create-offer-confirm') as HTMLButtonElement;
+  const createCancel       = document.getElementById('create-offer-cancel')!;
+  const createError        = document.getElementById('create-offer-error')!;
+
+  // Poblamos los selects de grupo cuando cambia la asignatura
+  asignaturaSelect.addEventListener('change', () => {
+    const selected = asignaturaSelect.selectedOptions[0];
+    const grupos: Array<{ id: string; nombre: string }> =
+      JSON.parse(selected?.dataset.grupos ?? '[]');
+
+    const options =
+      '<option value="">Selecciona un grupo…</option>' +
+      grupos.map((g) => `<option value="${g.id}">${g.nombre}</option>`).join('');
+
+    grupoActualSelect.innerHTML  = grupos.length ? options : '<option value="">Sin grupos disponibles</option>';
+    grupoDeseadoSelect.innerHTML = grupos.length ? options : '<option value="">Sin grupos disponibles</option>';
+    grupoActualSelect.disabled  = !grupos.length;
+    grupoDeseadoSelect.disabled = !grupos.length;
+    createOfferBtn.classList.add('hidden');
+    resultsContainer.classList.add('hidden');
+  });
+
+  // Búsqueda
+  searchBtn.addEventListener('click', async () => {
+    const asignaturaId   = asignaturaSelect.value;
+    const grupoActualId  = grupoActualSelect.value;
+    const grupoDeseadoId = grupoDeseadoSelect.value;
+
+    if (!asignaturaId || !grupoActualId || !grupoDeseadoId) {
+      alert('Selecciona asignatura, grupo actual y grupo deseado.');
+      return;
+    }
+
+    searchBtn.disabled = true;
+    searchBtn.textContent = 'Buscando…';
+
+    try {
+      const params = new URLSearchParams({ asignaturaId, grupoActualId, grupoDeseadoId });
+      const offers = await api.get<Offer[]>(`/offers?${params}`);
+
+      resultsContainer.classList.remove('hidden');
+      createOfferBtn.classList.add('hidden');
+
+      if (offers.length === 0) {
+        resultsList.innerHTML = '<p class="text-sm text-gray-500">No hay ofertas disponibles para este intercambio.</p>';
+        createOfferBtn.classList.remove('hidden');
+      } else {
+        resultsList.innerHTML = offers.map((o) => `
+          <div class="flex items-center justify-between rounded-lg border border-gray-100 bg-gray-50 px-4 py-3">
+            <div class="text-sm">
+              <span class="font-medium text-gray-800">${o.user.name}</span>
+              <span class="mx-2 text-gray-400">·</span>
+              <span class="text-gray-600">${o.grupoActual.nombre} → ${o.grupoDeseado.nombre}</span>
+            </div>
+            <button
+              data-offer-id="${o.id}"
+              class="accept-btn btn-primary py-1.5 px-3 text-xs"
+            >
+              Aceptar
+            </button>
+          </div>
+        `).join('');
+
+        // Eventos de aceptar oferta
+        resultsList.querySelectorAll<HTMLButtonElement>('.accept-btn').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const offerId = btn.dataset.offerId!;
+            btn.disabled = true;
+            btn.textContent = 'Aceptando…';
+            try {
+              await api.post(`/offers/${offerId}/accept`);
+              window.location.reload();
+            } catch (err) {
+              btn.disabled = false;
+              btn.textContent = 'Aceptar';
+              alert(err instanceof ApiError ? err.message : 'Error al aceptar la oferta');
+            }
+          });
+        });
+      }
+    } catch (err) {
+      resultsList.innerHTML = `<p class="text-sm text-red-600">${err instanceof ApiError ? err.message : 'Error al buscar'}</p>`;
+      resultsContainer.classList.remove('hidden');
+    } finally {
+      searchBtn.disabled = false;
+      searchBtn.textContent = 'Buscar';
+    }
+  });
+
+  // Modal de crear oferta
+  createOfferBtn.addEventListener('click', () => {
+    createError.classList.add('hidden');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+  });
+
+  createCancel.addEventListener('click', () => {
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+  });
+
+  createConfirm.addEventListener('click', async () => {
+    createError.classList.add('hidden');
+    createConfirm.disabled = true;
+    createConfirm.textContent = 'Publicando…';
+
+    try {
+      await api.post('/offers', {
+        asignaturaId:   asignaturaSelect.value,
+        grupoActualId:  grupoActualSelect.value,
+        grupoDeseadoId: grupoDeseadoSelect.value,
+      });
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+      window.location.reload();
+    } catch (err) {
+      createError.textContent = err instanceof ApiError ? err.message : 'Error al publicar';
+      createError.classList.remove('hidden');
+    } finally {
+      createConfirm.disabled = false;
+      createConfirm.textContent = 'Publicar';
+    }
+  });
+</script>

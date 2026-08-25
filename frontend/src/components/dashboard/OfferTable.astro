@@ -1,0 +1,116 @@
+---
+interface Offer {
+  id: string;
+  status: 'OPEN' | 'ACCEPTED' | 'CLOSED' | 'INACTIVE';
+  asignatura: { id: string; nombre: string; codigo: string };
+  grupoActual: { id: string; nombre: string };
+  grupoDeseado: { id: string; nombre: string };
+  acceptedById: string | null;
+  createdAt: string;
+}
+
+interface Props {
+  offers: Offer[];
+  currentUserId: string;
+}
+
+const { offers } = Astro.props;
+
+const STATUS_LABEL: Record<string, string> = {
+  OPEN: 'Abierto',
+  ACCEPTED: 'Aceptado',
+  CLOSED: 'Cerrado',
+  INACTIVE: 'Inactivo',
+};
+
+const STATUS_CLASS: Record<string, string> = {
+  OPEN: 'badge-open',
+  ACCEPTED: 'badge-accepted',
+  CLOSED: 'badge-closed',
+  INACTIVE: 'badge-inactive',
+};
+---
+
+<section class="rounded-2xl border border-gray-200 bg-white shadow-sm">
+  <div class="border-b border-gray-100 px-6 py-4">
+    <h2 class="text-lg font-semibold text-gray-900">Mis anuncios</h2>
+  </div>
+
+  {offers.length === 0 ? (
+    <p class="px-6 py-8 text-center text-sm text-gray-400">No tienes anuncios publicados todavía.</p>
+  ) : (
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+          <tr>
+            <th class="px-6 py-3">Asignatura</th>
+            <th class="px-6 py-3">Ofrezco</th>
+            <th class="px-6 py-3">Deseo</th>
+            <th class="px-6 py-3">Estado</th>
+            <th class="px-6 py-3">Acciones</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {offers.map((o) => (
+            <tr class="hover:bg-gray-50">
+              <td class="px-6 py-4 font-medium text-gray-900">
+                {o.asignatura.codigo}
+                <span class="block text-xs font-normal text-gray-500">{o.asignatura.nombre}</span>
+              </td>
+              <td class="px-6 py-4 text-gray-700">{o.grupoActual.nombre}</td>
+              <td class="px-6 py-4 text-gray-700">{o.grupoDeseado.nombre}</td>
+              <td class="px-6 py-4">
+                <span class={STATUS_CLASS[o.status] ?? 'badge-closed'}>
+                  {STATUS_LABEL[o.status] ?? o.status}
+                </span>
+              </td>
+              <td class="px-6 py-4">
+                <div class="flex items-center gap-2">
+                  {o.status === 'OPEN' && (
+                    <button
+                      type="button"
+                      class="close-offer-btn text-xs font-medium text-red-600 hover:underline"
+                      data-offer-id={o.id}
+                    >
+                      Cerrar
+                    </button>
+                  )}
+                  {o.status === 'ACCEPTED' && (
+                    <a
+                      href={`/chat/offer/${o.id}`}
+                      class="text-xs font-medium text-brand hover:underline"
+                    >
+                      Chatear
+                    </a>
+                  )}
+                  {(o.status === 'CLOSED' || o.status === 'INACTIVE') && (
+                    <span class="text-xs text-gray-400">—</span>
+                  )}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )}
+</section>
+
+<script>
+  import { api, ApiError } from '../../lib/api';
+
+  document.querySelectorAll<HTMLButtonElement>('.close-offer-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('¿Cerrar este anuncio? No podrá volver a abrirse.')) return;
+      const offerId = btn.dataset.offerId!;
+      btn.disabled = true;
+      try {
+        await api.patch(`/offers/${offerId}/close`);
+        window.location.reload();
+      } catch (err) {
+        alert(err instanceof ApiError ? err.message : 'Error al cerrar el anuncio');
+        btn.disabled = false;
+      }
+    });
+  });
+</script>

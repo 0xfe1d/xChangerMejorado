@@ -1,0 +1,159 @@
+---
+import MainLayout from '../layouts/MainLayout.astro';
+import OfferSearch from '../components/dashboard/OfferSearch.astro';
+import OfferTable from '../components/dashboard/OfferTable.astro';
+import CreateTicket from '../components/dashboard/CreateTicket.astro';
+import { serverApi, type UserMe } from '../lib/api';
+const api = serverApi(Astro.request);
+
+interface UserDetail extends UserMe {
+  name: string;
+  carreraId: string | null;
+  cursoId: string | null;
+}
+
+interface Asignatura {
+  id: string;
+  nombre: string;
+  codigo: string;
+  grupos: Array<{ id: string; nombre: string }>;
+}
+
+interface Offer {
+  id: string;
+  status: 'OPEN' | 'ACCEPTED' | 'CLOSED' | 'INACTIVE';
+  asignatura: { id: string; nombre: string; codigo: string };
+  grupoActual: { id: string; nombre: string };
+  grupoDeseado: { id: string; nombre: string };
+  acceptedById: string | null;
+  createdAt: string;
+}
+
+interface Ticket {
+  id: string;
+  asunto: string;
+  status: 'OPEN' | 'CLOSED';
+  createdAt: string;
+}
+
+let user: UserDetail | null = null;
+try {
+  user = await api.get<UserDetail>('/auth/me');
+} catch {
+  return Astro.redirect('/login');
+}
+
+// Asignaturas del expediente del usuario (para el buscador de intercambios)
+let asignaturas: Asignatura[] = [];
+try {
+  asignaturas = await api.get<Asignatura[]>('/me/expediente');
+} catch { /* sin asignaturas aún */ }
+
+// Mis anuncios
+let myOffers: Offer[] = [];
+try {
+  myOffers = await api.get<Offer[]>('/offers/me');
+} catch { /* vacío */ }
+
+// Historial de tickets del usuario
+let myTickets: Ticket[] = [];
+try {
+  myTickets = await api.get<Ticket[]>('/tickets/me');
+} catch { /* vacío */ }
+---
+
+<MainLayout title="Panel de usuario">
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Bienvenido/a, <span class="text-brand">{user?.name}</span></h1>
+    <p class="mt-1 text-sm text-gray-500">{user?.email}</p>
+  </div>
+
+  <!-- Notificaciones no leídas -->
+  <div id="notification-toast" class="mb-4 hidden rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+    Tienes notificaciones nuevas.
+    <a href="/notifications" class="ml-2 font-medium underline">Ver notificaciones</a>
+  </div>
+
+  <div class="space-y-6">
+    <!-- Módulo de búsqueda de intercambio -->
+    {asignaturas.length > 0 ? (
+      <OfferSearch asignaturas={asignaturas} />
+    ) : (
+      <div class="rounded-2xl border border-dashed border-gray-300 bg-white p-8 text-center">
+        <p class="text-sm text-gray-500">
+          Para buscar intercambios añade asignaturas a tu expediente.
+          <br />
+          Ve a <a href="/settings#expediente" class="font-medium text-brand hover:underline">Ajustes → Expediente</a>.
+        </p>
+      </div>
+    )}
+
+    <!-- Tabla de mis anuncios -->
+    <OfferTable offers={myOffers} currentUserId={user!.id} />
+
+    <!-- Módulo de soporte -->
+    <CreateTicket />
+
+    <!-- Historial de tickets -->
+    <section class="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+      <div class="border-b border-gray-100 px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-900">Mis tickets de soporte</h2>
+      </div>
+      {myTickets.length === 0 ? (
+        <p class="px-6 py-8 text-center text-sm text-gray-400">Todavía no has abierto ningún ticket.</p>
+      ) : (
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+            <tr>
+              <th class="px-6 py-3">Fecha</th>
+              <th class="px-6 py-3">Asunto</th>
+              <th class="px-6 py-3">Estado</th>
+              <th class="px-6 py-3"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            {myTickets.map((t) => (
+              <tr class="hover:bg-gray-50">
+                <td class="px-6 py-3 text-xs text-gray-500 whitespace-nowrap">
+                  {new Date(t.createdAt).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                </td>
+                <td class="px-6 py-3 font-medium text-gray-800 max-w-xs truncate">{t.asunto}</td>
+                <td class="px-6 py-3">
+                  <span class={t.status === 'OPEN'
+                    ? 'inline-flex items-center rounded-full bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-700 ring-1 ring-green-600/20'
+                    : 'inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600'}>
+                    {t.status === 'OPEN' ? 'Abierto' : 'Cerrado'}
+                  </span>
+                </td>
+                <td class="px-6 py-3 text-right">
+                  <a href={`/chat/ticket/${t.id}`} class="text-xs font-medium text-brand hover:underline">
+                    Ver chat →
+                  </a>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  </div>
+</MainLayout>
+
+<script>
+  import { connectSocket } from '../lib/socket';
+
+  const socket = connectSocket();
+
+  // Notificación en tiempo real de eventos del sistema
+  socket.on('receive_notification', () => {
+    document.getElementById('notification-toast')?.classList.remove('hidden');
+  });
+
+  socket.on('offer_accepted', () => {
+    window.location.reload();
+  });
+
+  socket.on('account_blocked', () => {
+    window.location.href = '/login';
+  });
+</script>

@@ -1,0 +1,163 @@
+---
+import MainLayout from '../layouts/MainLayout.astro';
+import { serverApi, type UserMe } from '../lib/api';
+const api = serverApi(Astro.request);
+
+interface Notification {
+  id: string;
+  asunto: string;
+  contenido: string;
+  isRead: boolean;
+  timestamp: string;
+}
+
+try {
+  await api.get<UserMe>('/auth/me');
+} catch {
+  return Astro.redirect('/login');
+}
+
+let notifications: Notification[] = [];
+try {
+  notifications = await api.get<Notification[]>('/notifications');
+} catch { /* vacío */ }
+---
+
+<MainLayout title="Notificaciones">
+  <div class="mx-auto max-w-3xl">
+    <div class="mb-6 flex items-center justify-between">
+      <h1 class="text-2xl font-bold text-gray-900">Notificaciones</h1>
+      {notifications.some((n) => !n.isRead) && (
+        <button id="mark-all-btn" type="button" class="btn-secondary text-sm">
+          Marcar todas como leídas
+        </button>
+      )}
+    </div>
+
+    {notifications.length === 0 ? (
+      <div class="rounded-2xl border border-dashed border-gray-300 bg-white p-12 text-center">
+        <p class="text-sm text-gray-400">No tienes notificaciones todavía.</p>
+      </div>
+    ) : (
+      <div class="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+            <tr>
+              <th class="px-6 py-3 w-[180px]">Fecha y hora</th>
+              <th class="px-6 py-3">Asunto</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100" id="notifications-body">
+            {notifications.map((n) => (
+              <tr
+                class={`cursor-pointer hover:bg-gray-50 transition-colors notification-row ${!n.isRead ? 'bg-blue-50/40' : ''}`}
+                data-id={n.id}
+                data-asunto={n.asunto}
+                data-contenido={n.contenido}
+                data-timestamp={n.timestamp}
+                data-read={String(n.isRead)}
+              >
+                <td class="px-6 py-4 text-gray-500 whitespace-nowrap text-xs">
+                  {new Date(n.timestamp).toLocaleDateString('es-ES', {
+                    day: '2-digit', month: '2-digit', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit',
+                  })}
+                </td>
+                <td class="px-6 py-4">
+                  <span class={`font-medium ${!n.isRead ? 'text-gray-900' : 'text-gray-600'}`}>
+                    {!n.isRead && (
+                      <span class="mr-2 inline-block h-1.5 w-1.5 rounded-full bg-brand align-middle"></span>
+                    )}
+                    {n.asunto}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </div>
+
+  <!-- Modal de detalle -->
+  <div
+    id="detail-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="detail-title"
+    class="fixed inset-0 z-50 hidden items-center justify-center bg-black/50 p-4"
+  >
+    <div class="w-full max-w-md rounded-2xl bg-white p-8 shadow-xl">
+      <div class="mb-1 text-xs text-gray-400" id="detail-timestamp"></div>
+      <h2 id="detail-title" class="mb-4 text-lg font-bold text-gray-900"></h2>
+      <p id="detail-content" class="whitespace-pre-wrap text-sm leading-relaxed text-gray-600"></p>
+      <button
+        id="detail-close"
+        type="button"
+        class="btn-primary mt-6 w-full"
+      >
+        Cerrar
+      </button>
+    </div>
+  </div>
+</MainLayout>
+
+<script>
+  import { api } from '../lib/api';
+
+  const modal      = document.getElementById('detail-modal')!;
+  const title      = document.getElementById('detail-title')!;
+  const content    = document.getElementById('detail-content')!;
+  const timestamp  = document.getElementById('detail-timestamp')!;
+  const closeBtn   = document.getElementById('detail-close')!;
+  const markAllBtn = document.getElementById('mark-all-btn') as HTMLButtonElement | null;
+
+  // Abrir modal al hacer clic en una fila
+  document.querySelectorAll<HTMLTableRowElement>('.notification-row').forEach((row) => {
+    row.addEventListener('click', async () => {
+      const id   = row.dataset.id!;
+      const isRead = row.dataset.read === 'true';
+
+      title.textContent     = row.dataset.asunto ?? '';
+      content.textContent   = row.dataset.contenido ?? '';
+      timestamp.textContent = new Date(row.dataset.timestamp ?? '').toLocaleString('es-ES');
+
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+
+      // Marcar como leída si no lo estaba
+      if (!isRead) {
+        await api.patch(`/notifications/${id}/read`).catch(() => {});
+        row.dataset.read = 'true';
+        row.classList.remove('bg-blue-50/40');
+        const dot = row.querySelector<HTMLSpanElement>('span.rounded-full');
+        dot?.remove();
+      }
+    });
+  });
+
+  closeBtn.addEventListener('click', () => {
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+  });
+
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+  });
+
+  // Marcar todas como leídas
+  markAllBtn?.addEventListener('click', async () => {
+    markAllBtn.disabled = true;
+    await api.patch('/notifications/read-all').catch(() => {});
+    // Actualizar visualmente sin recargar
+    document.querySelectorAll<HTMLTableRowElement>('.notification-row').forEach((row) => {
+      row.dataset.read = 'true';
+      row.classList.remove('bg-blue-50/40');
+      row.querySelector<HTMLSpanElement>('span.rounded-full')?.remove();
+    });
+    markAllBtn.remove();
+  });
+</script>

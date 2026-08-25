@@ -1,0 +1,109 @@
+---
+// Sin props; el componente se maneja íntegramente en el cliente
+---
+
+<section class="rounded-2xl border border-gray-200 bg-white shadow-sm">
+  <div class="border-b border-gray-100 px-6 py-4">
+    <h2 class="text-lg font-semibold text-gray-900">Abrir un ticket de soporte</h2>
+    <p class="mt-0.5 text-sm text-gray-500">
+      ¿Tienes algún problema o consulta? El equipo de embajadores te ayudará.
+    </p>
+  </div>
+
+  <div class="px-6 py-5">
+    <div
+      id="ticket-success"
+      role="alert"
+      class="mb-4 hidden rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800"
+    >
+      Ticket abierto correctamente.
+      <a id="ticket-link" href="/chat/ticket/" class="ml-1 font-medium underline">Ver ticket</a>
+    </div>
+
+    <div
+      id="ticket-error"
+      role="alert"
+      class="mb-4 hidden rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+    ></div>
+
+    <form id="create-ticket-form" novalidate class="space-y-4">
+      <div>
+        <label for="ticket-asunto" class="mb-1.5 block text-sm font-medium text-gray-700">
+          Asunto <span class="text-red-500" aria-hidden="true">*</span>
+        </label>
+        <input
+          id="ticket-asunto"
+          type="text"
+          name="asunto"
+          required
+          maxlength="200"
+          placeholder="Describe brevemente el motivo…"
+          class="input-field"
+        />
+      </div>
+
+      <div>
+        <label for="ticket-mensaje" class="mb-1.5 block text-sm font-medium text-gray-700">
+          Mensaje inicial <span class="text-xs text-gray-400">(opcional)</span>
+        </label>
+        <textarea
+          id="ticket-mensaje"
+          name="mensaje"
+          rows="4"
+          maxlength="2000"
+          placeholder="Explica con más detalle tu consulta o problema…"
+          class="input-field resize-none"
+        ></textarea>
+      </div>
+
+      <button
+        type="submit"
+        id="ticket-submit-btn"
+        class="btn-primary"
+      >
+        Enviar ticket
+      </button>
+    </form>
+  </div>
+</section>
+
+<script>
+  import { api, ApiError } from '../../lib/api';
+
+  const form       = document.getElementById('create-ticket-form') as HTMLFormElement;
+  const submitBtn  = document.getElementById('ticket-submit-btn') as HTMLButtonElement;
+  const errorBox   = document.getElementById('ticket-error')!;
+  const successBox = document.getElementById('ticket-success')!;
+  const ticketLink = document.getElementById('ticket-link') as HTMLAnchorElement;
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errorBox.classList.add('hidden');
+    successBox.classList.add('hidden');
+
+    const asunto  = (document.getElementById('ticket-asunto') as HTMLInputElement).value.trim();
+    const mensaje = (document.getElementById('ticket-mensaje') as HTMLTextAreaElement).value.trim();
+
+    if (!asunto) {
+      errorBox.textContent = 'El asunto es obligatorio.';
+      errorBox.classList.remove('hidden');
+      return;
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Enviando…';
+
+    try {
+      const ticket = await api.post<{ id: string }>('/tickets', { asunto, ...(mensaje ? { mensaje } : {}) });
+      ticketLink.href = `/chat/ticket/${ticket.id}`;
+      successBox.classList.remove('hidden');
+      form.reset();
+    } catch (err) {
+      errorBox.textContent = err instanceof ApiError ? err.message : 'Error al crear el ticket.';
+      errorBox.classList.remove('hidden');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Enviar ticket';
+    }
+  });
+</script>

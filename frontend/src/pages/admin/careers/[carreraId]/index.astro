@@ -1,0 +1,293 @@
+---
+import MainLayout from '../../../../layouts/MainLayout.astro';
+import { serverApi, type UserMe } from '../../../../lib/api';
+const api = serverApi(Astro.request);
+
+interface UserDetail extends UserMe { name: string; }
+interface Carrera  { id: string; nombre: string; }
+interface Curso    { id: string; nombre: string; carreraId: string; }
+
+let user: UserDetail | null = null;
+try {
+  user = await api.get<UserDetail>('/auth/me');
+} catch {
+  return Astro.redirect('/login');
+}
+if (user.role !== 'EMBAJADOR' && user.role !== 'PROPIETARIO') {
+  return Astro.redirect('/dashboard');
+}
+
+const { carreraId } = Astro.params;
+let carrera: Carrera | null = null;
+let cursos: Curso[] = [];
+try {
+  const allCareers = await api.get<Carrera[]>('/admin/careers');
+  carrera = allCareers.find((c) => c.id === carreraId) ?? null;
+  if (!carrera) return Astro.redirect('/admin');
+  cursos = await api.get<Curso[]>(`/admin/careers/${carreraId}/courses`);
+} catch {
+  return Astro.redirect('/admin');
+}
+---
+
+<MainLayout title={`Carrera: ${carrera.nombre}`}>
+  <div class="mb-6 flex items-center gap-3">
+    <a href="/admin" class="text-sm text-gray-500 hover:text-gray-700">← Administración</a>
+    <span class="text-gray-300">/</span>
+    <h1 class="text-xl font-bold text-gray-900">{carrera.nombre}</h1>
+  </div>
+
+  <!-- Modal genérico de confirmación -->
+  <dialog id="confirm-dialog" class="rounded-2xl p-8 shadow-xl w-full max-w-sm backdrop:bg-black/50">
+    <h3 id="confirm-title" class="mb-2 text-lg font-bold text-gray-900"></h3>
+    <p id="confirm-msg"    class="mb-2 text-sm text-gray-600"></p>
+    <p class="mb-6 rounded-lg bg-yellow-50 px-3 py-2 text-xs text-yellow-800 border border-yellow-200">
+      ⚠ Esta acción es irreversible. Se notificará a todos los usuarios afectados y se eliminarán las referencias vinculadas.
+    </p>
+    <div class="flex gap-3">
+      <button id="confirm-yes" type="button" class="btn-primary flex-1 bg-red-600 hover:bg-red-700">Eliminar</button>
+      <button id="confirm-no"  type="button" class="btn-secondary flex-1">Cancelar</button>
+    </div>
+  </dialog>
+
+  <div class="space-y-8">
+    <!-- ── Cursos ─────────────────────────────────────────── -->
+    <section class="rounded-2xl border border-gray-200 bg-white shadow-sm">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-900">Cursos</h2>
+        <button id="show-add-curso" type="button" class="btn-secondary text-sm">+ Añadir curso</button>
+      </div>
+
+      <!-- Formulario inline oculto -->
+      <div id="add-curso-form" class="hidden border-b border-gray-100 bg-gray-50 px-6 py-4">
+        <div id="add-curso-error" class="mb-2 hidden rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700"></div>
+        <div class="flex gap-3">
+          <input id="new-curso-name" type="text" placeholder="Nombre del curso (ej: 1º)" class="input-field flex-1" />
+          <button id="save-curso-btn" type="button" class="btn-primary">Guardar</button>
+          <button id="cancel-curso-btn" type="button" class="btn-secondary">Cancelar</button>
+        </div>
+      </div>
+
+      {cursos.length === 0 ? (
+        <p class="px-6 py-8 text-center text-sm text-gray-400">No hay cursos en esta carrera todavía.</p>
+      ) : (
+        <ul class="divide-y divide-gray-100" id="cursos-list">
+          {cursos.map((c) => (
+            <li class="px-6 py-4">
+              <div class="flex items-center justify-between">
+                <button
+                  type="button"
+                  class="toggle-curso-btn text-left font-medium text-gray-800 hover:text-brand"
+                  data-id={c.id}
+                  data-nombre={c.nombre}
+                >
+                  {c.nombre}
+                  <span class="ml-2 text-xs text-gray-400">(ver asignaturas)</span>
+                </button>
+                <button
+                  type="button"
+                  class="delete-curso-btn text-xs font-medium text-red-500 hover:text-red-700 hover:underline"
+                  data-id={c.id}
+                  data-nombre={c.nombre}
+                >Eliminar</button>
+              </div>
+
+              <!-- Asignaturas del curso (expandible) -->
+              <div id={`asignaturas-${c.id}`} class="mt-4 hidden">
+                <div id={`asig-loading-${c.id}`} class="text-xs text-gray-400">Cargando…</div>
+                <div id={`asig-list-${c.id}`} class="hidden">
+                  <!-- Añadir asignatura inline -->
+                  <div class="mb-3 flex gap-2">
+                    <input type="text" placeholder="Código"
+                           id={`asig-codigo-${c.id}`} class="input-field w-24 text-xs" />
+                    <input type="text" placeholder="Nombre de la asignatura"
+                           id={`asig-nombre-${c.id}`} class="input-field flex-1 text-xs" />
+                    <button type="button"
+                            class="add-asig-btn btn-secondary text-xs"
+                            data-curso-id={c.id}>
+                      + Añadir
+                    </button>
+                  </div>
+                  <div id={`asig-error-${c.id}`} class="mb-2 hidden rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700"></div>
+                  <table class="w-full text-sm">
+                    <thead class="text-left text-xs text-gray-400 uppercase">
+                      <tr>
+                        <th class="pb-2 pr-4">Código</th>
+                        <th class="pb-2 pr-4">Nombre</th>
+                        <th class="pb-2">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody id={`asig-tbody-${c.id}`} class="divide-y divide-gray-50"></tbody>
+                  </table>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  </div>
+</MainLayout>
+
+<script>
+  import { api, ApiError } from '../../../../lib/api';
+
+  interface Asignatura { id: string; nombre: string; codigo: string; }
+
+  const carreraId = window.location.pathname.split('/')[3];
+  const dialog    = document.getElementById('confirm-dialog')  as HTMLDialogElement;
+  const confirmTitle = document.getElementById('confirm-title')!;
+  const confirmMsg   = document.getElementById('confirm-msg')!;
+  const confirmYes   = document.getElementById('confirm-yes') as HTMLButtonElement;
+  const confirmNo    = document.getElementById('confirm-no') as HTMLButtonElement;
+
+  let pendingAction: (() => Promise<void>) | null = null;
+
+  function openConfirm(title: string, msg: string, action: () => Promise<void>) {
+    confirmTitle.textContent = title;
+    confirmMsg.textContent   = msg;
+    pendingAction = action;
+    dialog.showModal();
+  }
+
+  confirmNo.addEventListener('click',  () => { dialog.close(); pendingAction = null; });
+  confirmYes.addEventListener('click', async () => {
+    dialog.close();
+    if (pendingAction) { await pendingAction(); pendingAction = null; }
+  });
+
+  // ── Añadir curso ──────────────────────────────────────────
+  const showAddCurso   = document.getElementById('show-add-curso');
+  const addCursoForm   = document.getElementById('add-curso-form');
+  const newCursoInput  = document.getElementById('new-curso-name') as HTMLInputElement;
+  const saveCursoBtn   = document.getElementById('save-curso-btn') as HTMLButtonElement;
+  const cancelCursoBtn = document.getElementById('cancel-curso-btn');
+  const addCursoError  = document.getElementById('add-curso-error')!;
+
+  showAddCurso?.addEventListener('click', () => addCursoForm?.classList.toggle('hidden'));
+  cancelCursoBtn?.addEventListener('click', () => addCursoForm?.classList.add('hidden'));
+
+  saveCursoBtn?.addEventListener('click', async () => {
+    const nombre = newCursoInput.value.trim();
+    if (!nombre) return;
+    saveCursoBtn.disabled = true;
+    addCursoError.classList.add('hidden');
+    try {
+      await api.post('/admin/courses', { carreraId, nombre });
+      window.location.reload();
+    } catch (err) {
+      addCursoError.textContent = err instanceof ApiError ? err.message : 'Error al crear';
+      addCursoError.classList.remove('hidden');
+      saveCursoBtn.disabled = false;
+    }
+  });
+
+  // ── Eliminar curso ────────────────────────────────────────
+  document.querySelectorAll<HTMLButtonElement>('.delete-curso-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      openConfirm(
+        'Eliminar curso',
+        `¿Eliminar el curso "${btn.dataset.nombre}"? Se eliminarán todas sus asignaturas y grupos vinculados.`,
+        async () => {
+          try {
+            await api.delete(`/admin/courses/${btn.dataset.id}`);
+            window.location.reload();
+          } catch (err) {
+            alert(err instanceof ApiError ? err.message : 'Error al eliminar');
+          }
+        },
+      );
+    });
+  });
+
+  // ── Expandir asignaturas de un curso ──────────────────────
+  function renderAsignaturas(cursoId: string, asignaturas: Asignatura[]) {
+    const tbody = document.getElementById(`asig-tbody-${cursoId}`)!;
+    tbody.innerHTML = asignaturas.map((a) => `
+      <tr>
+        <td class="py-2 pr-4 text-xs font-mono text-gray-500">${a.codigo}</td>
+        <td class="py-2 pr-4 text-sm text-gray-800">${a.nombre}</td>
+        <td class="py-2 flex gap-3">
+          <a href="/admin/careers/${carreraId}/subjects/${a.id}/groups"
+             class="text-xs font-medium text-brand hover:underline">Grupos</a>
+          <button type="button"
+                  class="delete-asig-btn text-xs font-medium text-red-500 hover:underline"
+                  data-id="${a.id}" data-nombre="${a.nombre}">
+            Eliminar
+          </button>
+        </td>
+      </tr>
+    `).join('') || '<tr><td colspan="3" class="py-4 text-xs text-gray-400">Sin asignaturas.</td></tr>';
+
+    // Bind delete buttons
+    tbody.querySelectorAll<HTMLButtonElement>('.delete-asig-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        openConfirm(
+          'Eliminar asignatura',
+          `¿Eliminar la asignatura "${btn.dataset.nombre}"? Se eliminarán todos sus grupos y ofertas vinculadas.`,
+          async () => {
+            try {
+              await api.delete(`/admin/subjects/${btn.dataset.id}`);
+              // Refrescar lista
+              await loadAsignaturas(cursoId);
+            } catch (err) {
+              alert(err instanceof ApiError ? err.message : 'Error al eliminar');
+            }
+          },
+        );
+      });
+    });
+  }
+
+  async function loadAsignaturas(cursoId: string) {
+    const loading = document.getElementById(`asig-loading-${cursoId}`)!;
+    const listEl  = document.getElementById(`asig-list-${cursoId}`)!;
+    loading.classList.remove('hidden');
+    listEl.classList.add('hidden');
+    const asignaturas = await api.get<Asignatura[]>(`/admin/courses/${cursoId}/subjects`);
+    loading.classList.add('hidden');
+    renderAsignaturas(cursoId, asignaturas);
+    listEl.classList.remove('hidden');
+  }
+
+  document.querySelectorAll<HTMLButtonElement>('.toggle-curso-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const cursoId  = btn.dataset.id!;
+      const container = document.getElementById(`asignaturas-${cursoId}`)!;
+      const isOpen    = !container.classList.contains('hidden');
+
+      if (isOpen) {
+        container.classList.add('hidden');
+        return;
+      }
+      container.classList.remove('hidden');
+      await loadAsignaturas(cursoId);
+    });
+  });
+
+  // ── Añadir asignatura ─────────────────────────────────────
+  document.querySelectorAll<HTMLButtonElement>('.add-asig-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const cursoId = btn.dataset.cursoId!;
+      const codigo  = (document.getElementById(`asig-codigo-${cursoId}`) as HTMLInputElement).value.trim();
+      const nombre  = (document.getElementById(`asig-nombre-${cursoId}`) as HTMLInputElement).value.trim();
+      const errEl   = document.getElementById(`asig-error-${cursoId}`)!;
+
+      errEl.classList.add('hidden');
+      if (!codigo || !nombre) { errEl.textContent = 'Código y nombre son obligatorios'; errEl.classList.remove('hidden'); return; }
+
+      btn.disabled = true;
+      try {
+        await api.post('/admin/subjects', { cursoId, nombre, codigo });
+        (document.getElementById(`asig-codigo-${cursoId}`) as HTMLInputElement).value = '';
+        (document.getElementById(`asig-nombre-${cursoId}`) as HTMLInputElement).value = '';
+        await loadAsignaturas(cursoId);
+      } catch (err) {
+        errEl.textContent = err instanceof ApiError ? err.message : 'Error al crear';
+        errEl.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+</script>

@@ -1,0 +1,51 @@
+# ─────────────────────────────────────────────────────────────
+# xChanger — Infraestructura de Base de Datos
+# Servicios: PostgreSQL 15 + PgBouncer (connection pooling)
+#
+# Variables requeridas en .env:
+#   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB,
+#   PGBOUNCER_PORT (opcional, default: 6432)
+# ─────────────────────────────────────────────────────────────
+
+services:
+  # ── Base de datos principal ──────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: xchanger_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - xchanger_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # También expuesto al host para que Prisma migrate dev pueda conectar directamente
+    ports:
+      - "5432:5432"
+
+  # ── PgBouncer (solo producción) ──────────────────────────────
+  # En desarrollo se conecta directamente a PostgreSQL.
+  # Para producción, descomentar este bloque y añadir las
+  # variables PGBOUNCER_* al .env del servidor.
+  #
+  # pgbouncer:
+  #   image: edoburu/pgbouncer:latest
+  #   ...
+
+
+# ─────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  xchanger_net:
+    driver: bridge

@@ -1,0 +1,159 @@
+---
+import MainLayout from '../../../../../../layouts/MainLayout.astro';
+import { serverApi, type UserMe } from '../../../../../../lib/api';
+const api = serverApi(Astro.request);
+
+interface UserDetail extends UserMe { name: string; }
+interface Carrera    { id: string; nombre: string; }
+interface Asignatura { id: string; nombre: string; codigo: string; cursoId: string; }
+interface Grupo      { id: string; nombre: string; }
+
+let user: UserDetail | null = null;
+try {
+  user = await api.get<UserDetail>('/auth/me');
+} catch {
+  return Astro.redirect('/login');
+}
+if (user.role !== 'EMBAJADOR' && user.role !== 'PROPIETARIO') {
+  return Astro.redirect('/dashboard');
+}
+
+const { carreraId, asignaturaId } = Astro.params;
+
+let carrera: Carrera | null = null;
+let asignatura: Asignatura | null = null;
+let grupos: Grupo[] = [];
+
+try {
+  const allCareers = await api.get<Carrera[]>('/admin/careers');
+  carrera = allCareers.find((c) => c.id === carreraId) ?? null;
+  if (!carrera) return Astro.redirect('/admin');
+
+  // Buscar la asignatura en todos los cursos de la carrera
+  const courses = await api.get<{id:string}[]>(`/admin/careers/${carreraId}/courses`);
+  for (const c of courses) {
+    const subjects = await api.get<Asignatura[]>(`/admin/courses/${c.id}/subjects`);
+    const found = subjects.find((s) => s.id === asignaturaId);
+    if (found) { asignatura = found; break; }
+  }
+  if (!asignatura) return Astro.redirect(`/admin/careers/${carreraId}`);
+
+  grupos = await api.get<Grupo[]>(`/admin/subjects/${asignaturaId}/groups`);
+} catch {
+  return Astro.redirect(`/admin/careers/${carreraId}`);
+}
+---
+
+<MainLayout title={`Grupos — ${asignatura.codigo}`}>
+  <div class="mb-6 flex items-center gap-2 text-sm text-gray-500 flex-wrap">
+    <a href="/admin" class="hover:text-gray-700">Administración</a>
+    <span class="text-gray-300">/</span>
+    <a href={`/admin/careers/${carreraId}`} class="hover:text-gray-700">{carrera?.nombre}</a>
+    <span class="text-gray-300">/</span>
+    <span class="font-medium text-gray-800">{asignatura.codigo} — {asignatura.nombre}</span>
+  </div>
+
+  <!-- Modal de confirmación -->
+  <dialog id="confirm-dialog" class="rounded-2xl p-8 shadow-xl w-full max-w-sm backdrop:bg-black/50">
+    <h3 class="mb-2 text-lg font-bold text-gray-900">¿Eliminar grupo?</h3>
+    <p id="confirm-msg" class="mb-2 text-sm text-gray-600"></p>
+    <p class="mb-6 rounded-lg bg-yellow-50 px-3 py-2 text-xs text-yellow-800 border border-yellow-200">
+      ⚠ Se notificará a todos los usuarios con ofertas vinculadas a este grupo.
+    </p>
+    <div class="flex gap-3">
+      <button id="confirm-yes" type="button" class="btn-primary flex-1 bg-red-600 hover:bg-red-700">Eliminar</button>
+      <button id="confirm-no"  type="button" class="btn-secondary flex-1">Cancelar</button>
+    </div>
+  </dialog>
+
+  <section class="rounded-2xl border border-gray-200 bg-white shadow-sm">
+    <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+      <h2 class="text-lg font-semibold text-gray-900">Grupos de prácticas</h2>
+    </div>
+
+    <!-- Añadir grupo -->
+    <div class="border-b border-gray-100 px-6 py-4 bg-gray-50">
+      <div id="add-grupo-error" class="mb-2 hidden rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700"></div>
+      <div class="flex gap-3">
+        <input id="new-grupo-name" type="text" placeholder="Nombre del grupo (ej: Grupo A)" class="input-field flex-1" />
+        <button id="add-grupo-btn" type="button" class="btn-primary whitespace-nowrap">+ Añadir grupo</button>
+      </div>
+    </div>
+
+    <!-- Lista de grupos -->
+    <ul id="grupos-list" class="divide-y divide-gray-100">
+      {grupos.length === 0 ? (
+        <li class="px-6 py-8 text-center text-sm text-gray-400">No hay grupos en esta asignatura todavía.</li>
+      ) : (
+        grupos.map((g) => (
+          <li class="flex items-center justify-between px-6 py-4 hover:bg-gray-50">
+            <span class="font-medium text-gray-800">{g.nombre}</span>
+            <button
+              type="button"
+              class="delete-grupo-btn text-xs font-medium text-red-500 hover:text-red-700 hover:underline"
+              data-id={g.id}
+              data-nombre={g.nombre}
+            >Eliminar</button>
+          </li>
+        ))
+      )}
+    </ul>
+  </section>
+</MainLayout>
+
+<script>
+  import { api, ApiError } from '../../../../../../lib/api';
+
+  const asignaturaId = window.location.pathname.split('/')[5];
+  const dialog    = document.getElementById('confirm-dialog')  as HTMLDialogElement;
+  const confirmMsg   = document.getElementById('confirm-msg')!;
+  const confirmYes   = document.getElementById('confirm-yes') as HTMLButtonElement;
+  const confirmNo    = document.getElementById('confirm-no') as HTMLButtonElement;
+  let pendingAction: (() => Promise<void>) | null = null;
+
+  confirmNo.addEventListener('click',  () => { dialog.close(); pendingAction = null; });
+  confirmYes.addEventListener('click', async () => {
+    dialog.close();
+    if (pendingAction) { await pendingAction(); pendingAction = null; }
+  });
+
+  // ── Añadir grupo ──────────────────────────────────────────
+  const addGrupoBtn   = document.getElementById('add-grupo-btn') as HTMLButtonElement;
+  const newGrupoInput = document.getElementById('new-grupo-name') as HTMLInputElement;
+  const addGrupoError = document.getElementById('add-grupo-error')!;
+
+  addGrupoBtn.addEventListener('click', async () => {
+    const nombre = newGrupoInput.value.trim();
+    if (!nombre) return;
+    addGrupoBtn.disabled = true;
+    addGrupoError.classList.add('hidden');
+    try {
+      await api.post('/admin/groups', { asignaturaId, nombre });
+      window.location.reload();
+    } catch (err) {
+      addGrupoError.textContent = err instanceof ApiError ? err.message : 'Error al crear';
+      addGrupoError.classList.remove('hidden');
+      addGrupoBtn.disabled = false;
+    }
+  });
+
+  newGrupoInput.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Enter') addGrupoBtn.click();
+  });
+
+  // ── Eliminar grupo ────────────────────────────────────────
+  document.querySelectorAll<HTMLButtonElement>('.delete-grupo-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      confirmMsg.textContent = `¿Eliminar el grupo "${btn.dataset.nombre}"?`;
+      pendingAction = async () => {
+        try {
+          await api.delete(`/admin/groups/${btn.dataset.id}`);
+          window.location.reload();
+        } catch (err) {
+          alert(err instanceof ApiError ? err.message : 'Error al eliminar');
+        }
+      };
+      dialog.showModal();
+    });
+  });
+</script>

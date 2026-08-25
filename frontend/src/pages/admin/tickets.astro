@@ -1,0 +1,161 @@
+---
+import MainLayout from '../../layouts/MainLayout.astro';
+import { serverApi, type UserMe } from '../../lib/api';
+const api = serverApi(Astro.request);
+
+interface UserDetail extends UserMe { name: string; }
+
+interface Ticket {
+  id: string;
+  asunto: string;
+  status: 'OPEN' | 'CLOSED';
+  createdAt: string;
+  user: { id: string; name: string; email: string };
+  admin: { id: string; name: string } | null;
+}
+
+let user: UserDetail | null = null;
+try {
+  user = await api.get<UserDetail>('/auth/me');
+} catch {
+  return Astro.redirect('/login');
+}
+if (user.role !== 'EMBAJADOR' && user.role !== 'PROPIETARIO') {
+  return Astro.redirect('/dashboard');
+}
+
+let openTickets: Ticket[]   = [];
+let closedTickets: Ticket[] = [];
+try {
+  openTickets   = await api.get<Ticket[]>('/tickets/admin/list?status=OPEN');
+  closedTickets = await api.get<Ticket[]>('/tickets/admin/list?status=CLOSED');
+} catch { /* continuar con arrays vacíos */ }
+---
+
+<MainLayout title="Tickets — Administración">
+  <div class="mb-6 flex items-center gap-3">
+    <a href="/admin" class="text-sm text-gray-500 hover:text-gray-700">← Administración</a>
+    <span class="text-gray-300">/</span>
+    <h1 class="text-xl font-bold text-gray-900">Tickets de soporte</h1>
+  </div>
+
+  <!-- Filtros -->
+  <div class="mb-5 flex gap-3">
+    <input id="filter-asunto" type="text" placeholder="Filtrar por asunto…" class="input-field w-64" />
+    <input id="filter-user"   type="text" placeholder="Filtrar por usuario…" class="input-field w-64" />
+  </div>
+
+  <div class="space-y-8">
+    <!-- ── Tickets abiertos ──────────────────────────────── -->
+    <section class="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+      <div class="border-b border-gray-100 px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-900">
+          Tickets abiertos
+          <span class="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-brand text-xs font-bold text-white">
+            {openTickets.length}
+          </span>
+        </h2>
+      </div>
+
+      {openTickets.length === 0 ? (
+        <p class="px-6 py-8 text-center text-sm text-gray-400">No hay tickets abiertos en tu ámbito.</p>
+      ) : (
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+            <tr>
+              <th class="px-6 py-3">Fecha</th>
+              <th class="px-6 py-3">Usuario</th>
+              <th class="px-6 py-3">Asunto</th>
+              <th class="px-6 py-3">Acción</th>
+            </tr>
+          </thead>
+          <tbody id="open-tbody" class="divide-y divide-gray-100">
+            {openTickets.map((t) => (
+              <tr class="ticket-row hover:bg-gray-50" data-asunto={t.asunto.toLowerCase()} data-user={`${t.user.name} ${t.user.email}`.toLowerCase()}>
+                <td class="px-6 py-4 text-xs text-gray-500 whitespace-nowrap">
+                  {new Date(t.createdAt).toLocaleDateString('es-ES', { day:'2-digit', month:'2-digit', year:'numeric' })}
+                </td>
+                <td class="px-6 py-4">
+                  <p class="font-medium text-gray-800">{t.user.name}</p>
+                  <p class="text-xs text-gray-400">{t.user.email}</p>
+                </td>
+                <td class="px-6 py-4 text-gray-700">{t.asunto}</td>
+                <td class="px-6 py-4">
+                  <a href={`/chat/ticket/${t.id}`} class="text-xs font-medium text-brand hover:underline">
+                    Responder →
+                  </a>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+
+    <!-- ── Tickets cerrados (sección colapsable) ─────────── -->
+    <details class="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden group">
+      <summary class="flex cursor-pointer items-center justify-between px-6 py-4 border-b border-gray-100 select-none">
+        <h2 class="text-lg font-semibold text-gray-900">
+          Tickets cerrados
+          <span class="ml-2 text-sm font-normal text-gray-400">({closedTickets.length})</span>
+        </h2>
+        <svg class="h-5 w-5 text-gray-400 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </summary>
+
+      {closedTickets.length === 0 ? (
+        <p class="px-6 py-8 text-center text-sm text-gray-400">No hay tickets cerrados.</p>
+      ) : (
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+            <tr>
+              <th class="px-6 py-3">Fecha</th>
+              <th class="px-6 py-3">Usuario</th>
+              <th class="px-6 py-3">Asunto</th>
+              <th class="px-6 py-3">Historial</th>
+            </tr>
+          </thead>
+          <tbody id="closed-tbody" class="divide-y divide-gray-100">
+            {closedTickets.map((t) => (
+              <tr class="ticket-row hover:bg-gray-50" data-asunto={t.asunto.toLowerCase()} data-user={`${t.user.name} ${t.user.email}`.toLowerCase()}>
+                <td class="px-6 py-4 text-xs text-gray-500 whitespace-nowrap">
+                  {new Date(t.createdAt).toLocaleDateString('es-ES', { day:'2-digit', month:'2-digit', year:'numeric' })}
+                </td>
+                <td class="px-6 py-4">
+                  <p class="font-medium text-gray-800">{t.user.name}</p>
+                  <p class="text-xs text-gray-400">{t.user.email}</p>
+                </td>
+                <td class="px-6 py-4 text-gray-700">{t.asunto}</td>
+                <td class="px-6 py-4">
+                  <a href={`/chat/ticket/${t.id}`} class="text-xs font-medium text-gray-500 hover:underline">
+                    Ver →
+                  </a>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </details>
+  </div>
+</MainLayout>
+
+<script>
+  // Filtrado en cliente (asunto + usuario)
+  const filterAsunto = document.getElementById('filter-asunto') as HTMLInputElement;
+  const filterUser   = document.getElementById('filter-user')   as HTMLInputElement;
+
+  function applyFilter() {
+    const qa = filterAsunto.value.toLowerCase();
+    const qu = filterUser.value.toLowerCase();
+    document.querySelectorAll<HTMLTableRowElement>('.ticket-row').forEach((row) => {
+      const matchA = !qa || (row.dataset.asunto ?? '').includes(qa);
+      const matchU = !qu || (row.dataset.user  ?? '').includes(qu);
+      row.style.display = matchA && matchU ? '' : 'none';
+    });
+  }
+
+  filterAsunto.addEventListener('input', applyFilter);
+  filterUser.addEventListener('input',   applyFilter);
+</script>

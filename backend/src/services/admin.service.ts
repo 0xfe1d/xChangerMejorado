@@ -1,0 +1,478 @@
+import { Role } from '@prisma/client';
+
+import { AppError } from '../middleware/errorHandler';
+import { prisma } from '../config/prisma';
+import * as adminRepo from '../repositories/admin.repository';
+import * as offerRepo from '../repositories/offer.repository';
+import { notifyMany } from './notification.service';
+import { logAction } from './log.service';
+import { emitToUser } from '../sockets/socket.server';
+
+// ─────────────────────────────────────────────────────────────
+// CARRERAS
+// ─────────────────────────────────────────────────────────────
+
+export async function createCarrera(nombre: string, requesterId: string) {
+  const existing = await prisma.carrera.findFirst({ where: { nombre, deletedAt: null } });
+  if (existing) throw new AppError(409, 'Ya existe una carrera con ese nombre');
+
+  const carrera = await adminRepo.createCarrera(nombre);
+
+  // Auto-asignar ámbito a todos los PROPIETARIOS
+  const propietarios = await prisma.user.findMany({
+    where: { role: Role.PROPIETARIO, deletedAt: null },
+    select: { id: true },
+  });
+  await Promise.all(propietarios.map((p) => adminRepo.addAdminScope(p.id, carrera.id)));
+
+  logAction({ userId: requesterId, action: 'CREATE_CARRERA', payload: { carreraId: carrera.id, nombre } }).catch(console.error);
+  return carrera;
+}
+
+export async function deleteCarrera(carreraId: string, requesterId: string) {
+  const carrera = await adminRepo.findCareerById(carreraId);
+  if (!carrera) throw new AppError(404, 'Carrera no encontrada');
+
+  const activeOffers = await prisma.offer.count({
+    where: { deletedAt: null, status: { in: ['OPEN', 'ACCEPTED'] }, asignatura: { curso: { carreraId } } },
+  });
+
+  // El controlador puede devolver esta info para mostrar el modal de confirmación
+  const hasReferences = activeOffers > 0;
+
+  await adminRepo.softDeleteCarrera(carreraId);
+
+  if (hasReferences) {
+    const affected = await _notifyAffectedUsersByCarrera(carreraId, `La carrera "${carrera.nombre}" ha sido eliminada del sistema.`);
+    return { carrera, hasReferences, affectedUsers: affected };
+  }
+
+  logAction({ userId: requesterId, action: 'DELETE_CARRERA', payload: { carreraId } }).catch(console.error);
+  return { carrera, hasReferences: false, affectedUsers: 0 };
+}
+
+export async function listCareers() {
+  return adminRepo.findAllCareers();
+}
+
+// ─────────────────────────────────────────────────────────────
+// CURSOS
+// ─────────────────────────────────────────────────────────────
+
+export async function createCurso(carreraId: string, nombre: string, requesterId: string) {
+  const carrera = await adminRepo.findCareerById(carreraId);
+  if (!carrera) throw new AppError(404, 'Carrera no encontrada');
+
+  const existing = await prisma.curso.findFirst({ where: { carreraId, nombre, deletedAt: null } });
+  if (existing) throw new AppError(409, 'Ya existe un curso con ese nombre en esta carrera');
+
+  const curso = await adminRepo.createCurso(carreraId, nombre);
+  logAction({ userId: requesterId, action: 'CREATE_CURSO', payload: { cursoId: curso.id, nombre, carreraId } }).catch(console.error);
+  return curso;
+}
+
+export async function deleteCurso(cursoId: string, requesterId: string) {
+  const curso = await adminRepo.findCursoById(cursoId);
+  if (!curso) throw new AppError(404, 'Curso no encontrado');
+
+  const activeOffers = await adminRepo.countActiveOffersByCurso(cursoId);
+  const hasReferences = activeOffers > 0;
+
+  await adminRepo.softDeleteCurso(cursoId);
+
+  let affectedCount = 0;
+  if (hasReferences) {
+    affectedCount = await _notifyAffectedUsersByCurso(
+      cursoId,
+      `El curso "${curso.nombre}" ha sido eliminado. Las ofertas asociadas han sido canceladas.`,
+    );
+  }
+
+  logAction({ userId: requesterId, action: 'DELETE_CURSO', payload: { cursoId } }).catch(console.error);
+  return { curso, hasReferences, affectedUsers: affectedCount };
+}
+
+export async function listCursos(carreraId: string) {
+  return adminRepo.findCursosByCarrera(carreraId);
+}
+
+// ─────────────────────────────────────────────────────────────
+// ASIGNATURAS
+// ─────────────────────────────────────────────────────────────
+
+export async function createAsignatura(
+  cursoId: string,
+  nombre: string,
+  codigo: string,
+  requesterId: string,
+) {
+  const curso = await adminRepo.findCursoById(cursoId);
+  if (!curso) throw new AppError(404, 'Curso no encontrado');
+
+  const existing = await prisma.asignatura.findFirst({ where: { codigo, deletedAt: null } });
+  if (existing) throw new AppError(409, 'Ya existe una asignatura con ese código');
+
+  const asignatura = await adminRepo.createAsignatura(cursoId, nombre, codigo);
+  logAction({ userId: requesterId, action: 'CREATE_ASIGNATURA', payload: { asignaturaId: asignatura.id, nombre, codigo, cursoId } }).catch(console.error);
+  return asignatura;
+}
+
+export async function deleteAsignatura(asignaturaId: string, requesterId: string) {
+  const asignatura = await adminRepo.findAsignaturaById(asignaturaId);
+  if (!asignatura) throw new AppError(404, 'Asignatura no encontrada');
+
+  const activeOffers = await adminRepo.countActiveOffersByAsignatura(asignaturaId);
+  const hasReferences = activeOffers > 0;
+
+  await adminRepo.softDeleteAsignatura(asignaturaId);
+
+  let affectedCount = 0;
+  if (hasReferences) {
+    affectedCount = await _notifyAffectedUsersByAsignatura(
+      asignaturaId,
+      `La asignatura "${asignatura.nombre}" ha sido eliminada. Las ofertas asociadas han sido canceladas.`,
+    );
+  }
+
+  logAction({ userId: requesterId, action: 'DELETE_ASIGNATURA', payload: { asignaturaId } }).catch(console.error);
+  return { asignatura, hasReferences, affectedUsers: affectedCount };
+}
+
+export async function listAsignaturas(cursoId: string) {
+  return adminRepo.findAsignaturasByCurso(cursoId);
+}
+
+// ─────────────────────────────────────────────────────────────
+// GRUPOS
+// ─────────────────────────────────────────────────────────────
+
+export async function createGrupo(asignaturaId: string, nombre: string, requesterId: string) {
+  const asignatura = await adminRepo.findAsignaturaById(asignaturaId);
+  if (!asignatura) throw new AppError(404, 'Asignatura no encontrada');
+
+  const existing = await prisma.grupo.findFirst({ where: { asignaturaId, nombre, deletedAt: null } });
+  if (existing) throw new AppError(409, 'Ya existe un grupo con ese nombre en esta asignatura');
+
+  const grupo = await adminRepo.createGrupo(asignaturaId, nombre);
+  logAction({ userId: requesterId, action: 'CREATE_GRUPO', payload: { grupoId: grupo.id, nombre, asignaturaId } }).catch(console.error);
+  return grupo;
+}
+
+export async function deleteGrupo(grupoId: string, requesterId: string) {
+  const grupo = await adminRepo.findGrupoById(grupoId);
+  if (!grupo) throw new AppError(404, 'Grupo no encontrado');
+
+  const activeOffers = await adminRepo.countActiveOffersByGrupo(grupoId);
+  const hasReferences = activeOffers > 0;
+
+  await adminRepo.softDeleteGrupo(grupoId);
+
+  let affectedCount = 0;
+  if (hasReferences) {
+    affectedCount = await _notifyAffectedUsersByGrupo(
+      grupoId,
+      `El grupo "${grupo.nombre}" ha sido eliminado. Las ofertas asociadas han sido canceladas.`,
+    );
+  }
+
+  logAction({ userId: requesterId, action: 'DELETE_GRUPO', payload: { grupoId } }).catch(console.error);
+  return { grupo, hasReferences, affectedUsers: affectedCount };
+}
+
+export async function listGrupos(asignaturaId: string) {
+  return adminRepo.findGruposByAsignatura(asignaturaId);
+}
+
+// ─────────────────────────────────────────────────────────────
+// BLOQUEO / DESBLOQUEO DE USUARIOS
+// ─────────────────────────────────────────────────────────────
+
+export async function blockUser(
+  targetId: string,
+  reason: string,
+  blockedUntil: Date | null,
+  requesterId: string,
+  requesterRole: Role,
+) {
+  const target = await adminRepo.findUserByIdFull(targetId);
+  if (!target) throw new AppError(404, 'Usuario no encontrado');
+
+  // EMBAJADOR no puede bloquear a otro EMBAJADOR ni a PROPIETARIO
+  if (requesterRole === Role.EMBAJADOR && target.role !== Role.ESTUDIANTE) {
+    throw new AppError(403, 'Un embajador solo puede bloquear estudiantes');
+  }
+
+  await prisma.user.update({
+    where: { id: targetId },
+    data: {
+      role: Role.BLOQUEADO,
+      blockedUntil,
+      blockReason: reason,
+      blockedById: requesterId,
+      // Revocar sesión
+      refreshTokenHash: null,
+    },
+  });
+
+  // Todas sus ofertas OPEN pasan a INACTIVE
+  await offerRepo.deactivateUserOffers(targetId);
+
+  // Emitir evento en tiempo real para que el cliente cierre la sesión
+  emitToUser(targetId, 'account_blocked', { reason, blockedUntil });
+
+  logAction({
+    userId: requesterId,
+    action: 'BLOCK_USER',
+    payload: { targetId, reason, blockedUntil },
+  }).catch(console.error);
+}
+
+export async function unblockUser(targetId: string, requesterId: string) {
+  const target = await adminRepo.findUserByIdFull(targetId);
+  if (!target) throw new AppError(404, 'Usuario no encontrado');
+  if (target.role !== Role.BLOQUEADO) throw new AppError(409, 'El usuario no está bloqueado');
+
+  await prisma.user.update({
+    where: { id: targetId },
+    data: {
+      role: Role.ESTUDIANTE,
+      blockedUntil: null,
+      blockReason: null,
+      blockedById: null,
+    },
+  });
+
+  logAction({ userId: requesterId, action: 'UNBLOCK_USER', payload: { targetId } }).catch(console.error);
+}
+
+// ─────────────────────────────────────────────────────────────
+// GESTIÓN DE EMBAJADORES
+// ─────────────────────────────────────────────────────────────
+
+export async function promoteToEmbajador(
+  targetId: string,
+  scopes: Array<{ carreraId: string; cursoId?: string }>,
+  requesterId: string,
+) {
+  const target = await adminRepo.findUserByIdFull(targetId);
+  if (!target) throw new AppError(404, 'Usuario no encontrado');
+  if (target.role === Role.PROPIETARIO) throw new AppError(400, 'No se puede modificar el rol de un Propietario');
+
+  await prisma.user.update({ where: { id: targetId }, data: { role: Role.EMBAJADOR } });
+  await adminRepo.clearAdminScopes(targetId);
+  await Promise.all(scopes.map((s) => adminRepo.addAdminScope(targetId, s.carreraId, s.cursoId)));
+
+  logAction({ userId: requesterId, action: 'PROMOTE_EMBAJADOR', payload: { targetId, scopes } }).catch(console.error);
+}
+
+export async function demoteEmbajador(targetId: string, requesterId: string) {
+  const target = await adminRepo.findUserByIdFull(targetId);
+  if (!target) throw new AppError(404, 'Usuario no encontrado');
+  if (target.role !== Role.EMBAJADOR) throw new AppError(400, 'El usuario no es embajador');
+
+  await prisma.user.update({ where: { id: targetId }, data: { role: Role.ESTUDIANTE } });
+  await adminRepo.clearAdminScopes(targetId);
+
+  logAction({ userId: requesterId, action: 'DEMOTE_EMBAJADOR', payload: { targetId } }).catch(console.error);
+}
+
+export async function updateAdminScope(
+  targetId: string,
+  scopes: Array<{ carreraId: string; cursoId?: string }>,
+  requesterId: string,
+) {
+  const target = await adminRepo.findUserByIdFull(targetId);
+  if (!target) throw new AppError(404, 'Usuario no encontrado');
+  if (target.role !== Role.EMBAJADOR) throw new AppError(400, 'Solo se puede modificar el ámbito de un embajador');
+
+  await adminRepo.clearAdminScopes(targetId);
+  await Promise.all(scopes.map((s) => adminRepo.addAdminScope(targetId, s.carreraId, s.cursoId)));
+
+  logAction({ userId: requesterId, action: 'UPDATE_SCOPE', payload: { targetId, scopes } }).catch(console.error);
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUDITORÍA DE USUARIOS
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Verifica que el usuario objetivo está dentro del ámbito del admin.
+ * PROPIETARIO tiene acceso irrestricto.
+ */
+async function assertUserInScope(
+  targetId: string,
+  requesterId: string,
+  requesterRole: Role,
+): Promise<void> {
+  if (requesterRole === Role.PROPIETARIO) return;
+
+  const target = await prisma.user.findFirst({
+    where: { id: targetId, deletedAt: null },
+    select: { carreraId: true, cursoId: true },
+  });
+  if (!target) throw new AppError(404, 'Usuario no encontrado');
+
+  const scopes = await prisma.adminScope.findMany({ where: { userId: requesterId } });
+  const inScope = scopes.some(
+    (s) =>
+      s.carreraId === target.carreraId &&
+      (s.cursoId === null || s.cursoId === target.cursoId),
+  );
+  if (!inScope) throw new AppError(403, 'No tienes ámbito de administración sobre este usuario');
+}
+
+export async function searchUsersInScope(
+  query: string,
+  requesterId: string,
+  requesterRole: Role,
+) {
+  const q = query.trim();
+  if (!q) throw new AppError(400, 'Se requiere un término de búsqueda');
+
+  let carreraIds: string[] | undefined;
+  let cursoIds: string[] | undefined;
+
+  if (requesterRole !== Role.PROPIETARIO) {
+    const scopes = await prisma.adminScope.findMany({ where: { userId: requesterId } });
+    carreraIds = scopes.map((s) => s.carreraId);
+    cursoIds = scopes.flatMap((s) => (s.cursoId ? [s.cursoId] : []));
+  }
+
+  return prisma.user.findMany({
+    where: {
+      deletedAt: null,
+      AND: [
+        {
+          OR: [
+            { name: { contains: q, mode: 'insensitive' } },
+            { email: { contains: q, mode: 'insensitive' } },
+          ],
+        },
+        ...(carreraIds
+          ? [{ OR: [{ carreraId: { in: carreraIds } }, ...(cursoIds?.length ? [{ cursoId: { in: cursoIds } }] : [])] }]
+          : []),
+      ],
+    },
+    select: { id: true, name: true, email: true, role: true },
+    take: 20,
+  });
+}
+
+export async function getUserDetails(
+  targetId: string,
+  requesterId: string,
+  requesterRole: Role,
+) {
+  await assertUserInScope(targetId, requesterId, requesterRole);
+
+  const [user, logs, loginHistory] = await Promise.all([
+    prisma.user.findFirst({
+      where: { id: targetId, deletedAt: null },
+      select: {
+        id: true, name: true, email: true, role: true,
+        blockReason: true, blockedUntil: true, createdAt: true,
+        carrera: { select: { nombre: true } },
+        curso: { select: { nombre: true } },
+      },
+    }),
+    prisma.log.findMany({
+      where: { userId: targetId },
+      orderBy: { timestamp: 'desc' },
+      take: 50,
+    }),
+    prisma.loginHistory.findMany({
+      where: { userId: targetId },
+      orderBy: { timestamp: 'desc' },
+      take: 20,
+    }),
+  ]);
+
+  if (!user) throw new AppError(404, 'Usuario no encontrado');
+  return { user, logs, loginHistory };
+}
+
+export async function adminForcePasswordChange(
+  targetId: string,
+  newPassword: string,
+  requesterId: string,
+  requesterRole: Role,
+) {
+  await assertUserInScope(targetId, requesterId, requesterRole);
+
+  const { validatePasswordComplexity, hashPassword } = await import('../utils/password');
+  validatePasswordComplexity(newPassword);
+  const newHash = await hashPassword(newPassword);
+
+  await prisma.user.update({ where: { id: targetId }, data: { passwordHash: newHash, refreshTokenHash: null } });
+  logAction({ userId: requesterId, action: 'ADMIN_FORCE_PASSWORD', payload: { targetId } }).catch(console.error);
+}
+
+export { adminRepo as repository };
+
+// ─────────────────────────────────────────────────────────────
+// Helpers privados de notificación en cascada
+// ─────────────────────────────────────────────────────────────
+
+async function _notifyAffectedUsersByCarrera(carreraId: string, message: string): Promise<number> {
+  const rows = await prisma.user.findMany({
+    where: { carreraId, deletedAt: null },
+    select: { id: true, email: true },
+  });
+  if (rows.length === 0) return 0;
+  const recipients = rows.map((u) => ({ userId: u.id, email: u.email }));
+  await notifyMany(recipients, 'Aviso del sistema', message);
+  rows.forEach((u) => emitToUser(u.id, 'receive_notification', { type: 'system', message }));
+  return rows.length;
+}
+
+async function _notifyAffectedUsersByCurso(cursoId: string, message: string): Promise<number> {
+  const rows = await prisma.user.findMany({
+    where: { cursoId, deletedAt: null },
+    select: { id: true, email: true },
+  });
+  if (rows.length === 0) return 0;
+  const recipients = rows.map((u) => ({ userId: u.id, email: u.email }));
+  await notifyMany(recipients, 'Aviso del sistema', message);
+  rows.forEach((u) => emitToUser(u.id, 'receive_notification', { type: 'system', message }));
+  return rows.length;
+}
+
+async function _notifyAffectedUsersByAsignatura(asignaturaId: string, message: string): Promise<number> {
+  const enrolled = await prisma.userAsignatura.findMany({
+    where: { asignaturaId },
+    include: { user: { select: { id: true, email: true, deletedAt: true } } },
+  });
+  const rows = enrolled.filter((e) => !e.user.deletedAt).map((e) => e.user);
+  if (rows.length === 0) return 0;
+  const recipients = rows.map((u) => ({ userId: u.id, email: u.email }));
+  await notifyMany(recipients, 'Aviso del sistema', message);
+  rows.forEach((u) => emitToUser(u.id, 'receive_notification', { type: 'system', message }));
+  return rows.length;
+}
+
+async function _notifyAffectedUsersByGrupo(grupoId: string, message: string): Promise<number> {
+  const offers = await prisma.offer.findMany({
+    where: {
+      deletedAt: null,
+      status: { in: ['OPEN', 'ACCEPTED'] },
+      OR: [{ grupoDeseadoId: grupoId }, { grupoActualId: grupoId }],
+    },
+    include: {
+      user: { select: { id: true, email: true } },
+      acceptedBy: { select: { id: true, email: true } },
+    },
+  });
+
+  const uniqueUsers = new Map<string, { id: string; email: string }>();
+  for (const o of offers) {
+    if (o.user) uniqueUsers.set(o.user.id, o.user);
+    if (o.acceptedBy) uniqueUsers.set(o.acceptedBy.id, o.acceptedBy);
+  }
+
+  const rows = [...uniqueUsers.values()];
+  if (rows.length === 0) return 0;
+  const recipients = rows.map((u) => ({ userId: u.id, email: u.email }));
+  await notifyMany(recipients, 'Aviso del sistema', message);
+  rows.forEach((u) => emitToUser(u.id, 'receive_notification', { type: 'system', message }));
+  return rows.length;
+}

@@ -1,0 +1,321 @@
+---
+import MainLayout from '../../layouts/MainLayout.astro';
+import { serverApi, type UserMe } from '../../lib/api';
+const api = serverApi(Astro.request);
+
+interface UserDetail extends UserMe {
+  name: string;
+}
+interface Carrera { id: string; nombre: string; }
+interface Ambassador { id: string; name: string; email: string; }
+
+let user: UserDetail | null = null;
+try {
+  user = await api.get<UserDetail>('/auth/me');
+} catch {
+  return Astro.redirect('/login');
+}
+
+if (user.role !== 'EMBAJADOR' && user.role !== 'PROPIETARIO') {
+  return Astro.redirect('/dashboard');
+}
+
+const isOwner = user.role === 'PROPIETARIO';
+
+let careers: Carrera[] = [];
+let ambassadors: Ambassador[] = [];
+try {
+  careers = await api.get<Carrera[]>('/admin/careers');
+  if (isOwner) {
+    ambassadors = await api.get<Ambassador[]>('/admin/ambassadors');
+  }
+} catch { /* continuar con arrays vacíos */ }
+---
+
+<MainLayout title="Administración">
+  <div class="mb-6 flex items-center justify-between">
+    <h1 class="text-2xl font-bold text-gray-900">Panel de administración</h1>
+    <div class="flex gap-3">
+      <a href="/admin/tickets" class="btn-secondary text-sm">Tickets</a>
+      <a href="/admin/logs"    class="btn-secondary text-sm">Logs</a>
+    </div>
+  </div>
+
+  <div class="space-y-8">
+    <!-- ── Módulo Owner (solo PROPIETARIO) ─────────────────── -->
+    {isOwner && (
+      <section class="rounded-2xl border border-amber-200 bg-amber-50 p-6">
+        <h2 class="mb-5 text-lg font-semibold text-amber-900">Gestión de embajadores</h2>
+
+        <!-- Añadir embajador -->
+        <div class="mb-6">
+          <h3 class="mb-3 text-sm font-medium text-gray-700">Añadir embajador</h3>
+          <div id="user-search-results" class="mb-2 hidden max-h-40 overflow-y-auto rounded-lg border border-gray-200 bg-white"></div>
+          <div class="flex gap-3">
+            <input id="ambassador-search" type="text" placeholder="Buscar por nombre o email…" class="input-field flex-1" autocomplete="off" />
+            <select id="ambassador-carrera" class="input-field w-48">
+              <option value="">Carrera del ámbito…</option>
+              {careers.map((c) => <option value={c.id}>{c.nombre}</option>)}
+            </select>
+            <button id="add-ambassador-btn" type="button" class="btn-primary whitespace-nowrap">Añadir</button>
+          </div>
+          <p id="ambassador-selected" class="mt-1 text-xs text-gray-500">Ningún usuario seleccionado.</p>
+        </div>
+
+        <!-- Lista de embajadores -->
+        <div>
+          <h3 class="mb-3 text-sm font-medium text-gray-700">Embajadores actuales</h3>
+          {ambassadors.length === 0 ? (
+            <p class="text-sm text-gray-400">No hay embajadores registrados.</p>
+          ) : (
+            <ul class="space-y-2" id="ambassador-list">
+              {ambassadors.map((a) => (
+                <li class="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-4 py-3">
+                  <div>
+                    <p class="text-sm font-medium text-gray-900">{a.name}</p>
+                    <p class="text-xs text-gray-400">{a.email}</p>
+                  </div>
+                  <button
+                    type="button"
+                    class="remove-ambassador-btn text-xs font-medium text-red-600 hover:underline"
+                    data-id={a.id}
+                    data-name={a.name}
+                  >Eliminar</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+    )}
+
+    <!-- ── Auditoría: búsqueda de usuarios ────────────────── -->
+    <section class="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+      <h2 class="mb-4 text-lg font-semibold text-gray-900">Auditoría de usuarios</h2>
+      <p class="mb-4 text-sm text-gray-500">Busca un usuario de tu ámbito para ver su actividad, historial de accesos y gestionar su cuenta.</p>
+      <div class="relative">
+        <input
+          id="audit-user-search"
+          type="text"
+          placeholder="Buscar por nombre o email…"
+          class="input-field w-full"
+          autocomplete="off"
+        />
+        <div id="audit-search-results" class="absolute z-10 mt-1 hidden w-full max-h-60 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg"></div>
+      </div>
+    </section>
+
+    <!-- ── Búsqueda de carrera ──────────────────────────────── -->
+    <section class="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+      <h2 class="mb-4 text-lg font-semibold text-gray-900">Seleccionar carrera</h2>
+      <p class="mb-4 text-sm text-gray-500">
+        Elige una carrera de tu ámbito para administrar sus cursos, asignaturas y grupos.
+      </p>
+      <input
+        id="career-search"
+        type="text"
+        placeholder="Filtrar carreras…"
+        class="input-field mb-4"
+      />
+      <ul id="career-list" class="divide-y divide-gray-100 rounded-xl border border-gray-200 overflow-hidden">
+        {careers.length === 0
+          ? <li class="px-4 py-8 text-center text-sm text-gray-400">No hay carreras disponibles en tu ámbito.</li>
+          : careers.map((c) => (
+            <li>
+              <a
+                href={`/admin/careers/${c.id}`}
+                class="career-item flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors"
+                data-name={c.nombre.toLowerCase()}
+              >
+                <span class="font-medium text-gray-800">{c.nombre}</span>
+                <svg class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+    </section>
+
+    <!-- ── Añadir carrera (solo PROPIETARIO) ───────────────── -->
+    {isOwner && (
+      <section class="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        <h2 class="mb-4 text-lg font-semibold text-gray-900">Añadir carrera</h2>
+        <div id="add-career-error" class="mb-3 hidden rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"></div>
+        <div class="flex gap-3">
+          <input id="new-career-name" type="text" placeholder="Nombre de la carrera…" class="input-field flex-1" />
+          <button id="add-career-btn" type="button" class="btn-primary whitespace-nowrap">Crear carrera</button>
+        </div>
+      </section>
+    )}
+  </div>
+
+  <!-- Modal de confirmación para eliminar embajador -->
+  <dialog id="confirm-remove-modal" class="rounded-2xl p-8 shadow-xl w-full max-w-sm backdrop:bg-black/50">
+    <h3 class="mb-2 text-lg font-bold text-gray-900">¿Eliminar embajador?</h3>
+    <p id="confirm-remove-msg" class="mb-6 text-sm text-gray-500"></p>
+    <div class="flex gap-3">
+      <button id="confirm-remove-yes" type="button" class="btn-primary flex-1">Eliminar</button>
+      <button id="confirm-remove-no"  type="button" class="btn-secondary flex-1">Cancelar</button>
+    </div>
+  </dialog>
+</MainLayout>
+
+<script>
+  import { api, ApiError } from '../../lib/api';
+
+  // ── Filtro de carreras ────────────────────────────────────
+  const careerSearch = document.getElementById('career-search') as HTMLInputElement;
+  careerSearch?.addEventListener('input', () => {
+    const q = careerSearch.value.toLowerCase();
+    document.querySelectorAll<HTMLAnchorElement>('.career-item').forEach((el) => {
+      const match = (el.dataset.name ?? '').includes(q);
+      el.closest('li')!.style.display = match ? '' : 'none';
+    });
+  });
+
+  // ── Búsqueda de usuarios para embajador ───────────────────
+  interface User { id: string; name: string; email: string; role: string; }
+  let selectedUserId: string | null = null;
+
+  const ambassadorSearch  = document.getElementById('ambassador-search') as HTMLInputElement | null;
+  const searchResults     = document.getElementById('user-search-results');
+  const selectedLabel     = document.getElementById('ambassador-selected');
+  const carreraSelect     = document.getElementById('ambassador-carrera') as HTMLSelectElement | null;
+  const addAmbassadorBtn  = document.getElementById('add-ambassador-btn');
+
+  let searchTimeout: ReturnType<typeof setTimeout>;
+  ambassadorSearch?.addEventListener('input', () => {
+    clearTimeout(searchTimeout);
+    const q = ambassadorSearch.value.trim();
+    if (q.length < 2) { searchResults?.classList.add('hidden'); return; }
+    searchTimeout = setTimeout(async () => {
+      try {
+        const users = await api.get<User[]>(`/admin/users/search?q=${encodeURIComponent(q)}`);
+        if (!searchResults) return;
+        searchResults.innerHTML = users.map((u) => `
+          <button type="button" data-id="${u.id}" data-name="${u.name}" data-email="${u.email}"
+                  class="user-result-btn w-full px-4 py-2.5 text-left text-sm hover:bg-gray-50 flex items-center justify-between">
+            <span class="font-medium text-gray-800">${u.name}</span>
+            <span class="text-gray-400 text-xs">${u.email}</span>
+          </button>
+        `).join('') || '<p class="px-4 py-3 text-sm text-gray-400">Sin resultados.</p>';
+        searchResults.classList.remove('hidden');
+
+        searchResults.querySelectorAll<HTMLButtonElement>('.user-result-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            selectedUserId = btn.dataset.id!;
+            if (selectedLabel) selectedLabel.textContent = `Seleccionado: ${btn.dataset.name} (${btn.dataset.email})`;
+            if (ambassadorSearch) ambassadorSearch.value = btn.dataset.name ?? '';
+            searchResults.classList.add('hidden');
+          });
+        });
+      } catch { /* ignorar */ }
+    }, 300);
+  });
+
+  addAmbassadorBtn?.addEventListener('click', async () => {
+    if (!selectedUserId) { alert('Selecciona un usuario primero.'); return; }
+    const carreraId = carreraSelect?.value;
+    if (!carreraId) { alert('Selecciona la carrera del ámbito.'); return; }
+
+    addAmbassadorBtn.setAttribute('disabled', '');
+    try {
+      await api.post('/admin/ambassadors', {
+        targetId: selectedUserId,
+        scopes: [{ carreraId }],
+      });
+      window.location.reload();
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : 'Error al añadir embajador');
+      addAmbassadorBtn.removeAttribute('disabled');
+    }
+  });
+
+  // ── Eliminar embajador ────────────────────────────────────
+  const confirmModal  = document.getElementById('confirm-remove-modal') as HTMLDialogElement | null;
+  const confirmMsg    = document.getElementById('confirm-remove-msg');
+  const confirmYes    = document.getElementById('confirm-remove-yes');
+  const confirmNo     = document.getElementById('confirm-remove-no');
+  let pendingRemoveId: string | null = null;
+
+  document.querySelectorAll<HTMLButtonElement>('.remove-ambassador-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      pendingRemoveId = btn.dataset.id!;
+      if (confirmMsg) confirmMsg.textContent = `¿Eliminar a "${btn.dataset.name}" como embajador?`;
+      confirmModal?.showModal();
+    });
+  });
+
+  confirmNo?.addEventListener('click', () => { confirmModal?.close(); pendingRemoveId = null; });
+
+  confirmYes?.addEventListener('click', async () => {
+    if (!pendingRemoveId) return;
+    confirmModal?.close();
+    try {
+      await api.delete(`/admin/ambassadors/${pendingRemoveId}`);
+      window.location.reload();
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : 'Error al eliminar embajador');
+    }
+  });
+
+  // ── Auditoría: búsqueda de usuarios ─────────────────────
+  const auditSearch = document.getElementById('audit-user-search') as HTMLInputElement | null;
+  const auditResults = document.getElementById('audit-search-results');
+  let auditTimeout: ReturnType<typeof setTimeout>;
+
+  auditSearch?.addEventListener('input', () => {
+    clearTimeout(auditTimeout);
+    const q = auditSearch.value.trim();
+    if (q.length < 2) { auditResults?.classList.add('hidden'); return; }
+    auditTimeout = setTimeout(async () => {
+      try {
+        const users = await api.get<User[]>(`/admin/users/search?q=${encodeURIComponent(q)}`);
+        if (!auditResults) return;
+        auditResults.innerHTML = users.length
+          ? users.map((u) => `
+              <a href="/admin/users/${u.id}"
+                 class="flex items-center justify-between px-4 py-3 hover:bg-gray-50 text-sm border-b last:border-b-0">
+                <div>
+                  <span class="font-medium text-gray-900">${u.name}</span>
+                  <span class="ml-2 text-xs text-gray-400">${u.email}</span>
+                </div>
+                <span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">${u.role}</span>
+              </a>
+            `).join('')
+          : '<p class="px-4 py-3 text-sm text-gray-400">Sin resultados.</p>';
+        auditResults.classList.remove('hidden');
+      } catch { /* ignorar */ }
+    }, 300);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!auditSearch?.contains(e.target as Node) && !auditResults?.contains(e.target as Node)) {
+      auditResults?.classList.add('hidden');
+    }
+  });
+
+  // ── Añadir carrera ────────────────────────────────────────
+  const addCareerBtn   = document.getElementById('add-career-btn');
+  const newCareerInput = document.getElementById('new-career-name') as HTMLInputElement | null;
+  const addCareerError = document.getElementById('add-career-error');
+
+  addCareerBtn?.addEventListener('click', async () => {
+    const nombre = newCareerInput?.value.trim();
+    if (!nombre) return;
+    addCareerBtn.setAttribute('disabled', '');
+    if (addCareerError) addCareerError.classList.add('hidden');
+    try {
+      await api.post('/admin/careers', { nombre });
+      window.location.reload();
+    } catch (err) {
+      if (addCareerError) {
+        addCareerError.textContent = err instanceof ApiError ? err.message : 'Error al crear carrera';
+        addCareerError.classList.remove('hidden');
+      }
+      addCareerBtn.removeAttribute('disabled');
+    }
+  });
+</script>

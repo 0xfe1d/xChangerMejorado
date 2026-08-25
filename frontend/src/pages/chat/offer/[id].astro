@@ -1,0 +1,80 @@
+---
+import MainLayout from '../../../layouts/MainLayout.astro';
+import ChatWindow from '../../../components/tickets/ChatWindow.astro';
+import { serverApi, type UserMe } from '../../../lib/api';
+const api = serverApi(Astro.request);
+
+interface UserDetail extends UserMe {
+  name: string;
+}
+
+interface Message {
+  id: string;
+  content: string;
+  timestamp: string;
+  author: { id: string; name: string };
+}
+
+interface Offer {
+  id: string;
+  status: string;
+  userId: string;
+  acceptedById: string | null;
+  asignatura: { nombre: string; codigo: string };
+  grupoActual: { nombre: string };
+  grupoDeseado: { nombre: string };
+  messages: Message[];
+}
+
+let user: UserDetail | null = null;
+try {
+  user = await api.get<UserDetail>('/auth/me');
+} catch {
+  return Astro.redirect('/login');
+}
+
+const { id } = Astro.params;
+let offer: Offer | null = null;
+let messages: Message[] = [];
+
+try {
+  offer = await api.get<Offer>(`/offers/${id}`);
+  // Solo el creador y el aceptante pueden ver el chat
+  if (offer.userId !== user.id && offer.acceptedById !== user.id) {
+    return Astro.redirect('/dashboard');
+  }
+  messages = offer.messages ?? [];
+} catch {
+  return Astro.redirect('/dashboard');
+}
+
+// Solo ACCEPTED permite chatear; CLOSED muestra el historial en solo lectura
+const canClose = offer.status === 'ACCEPTED';
+const isClosed = offer.status === 'CLOSED';
+---
+
+<MainLayout title={`Chat — ${offer?.asignatura.codigo}`}>
+  <div class="mx-auto max-w-2xl">
+    <div class="mb-4 flex items-center gap-3">
+      <a href="/dashboard" class="text-sm text-gray-500 hover:text-gray-700">← Volver al panel</a>
+    </div>
+
+    <div class="mb-4">
+      <h1 class="text-xl font-bold text-gray-900">
+        Intercambio: {offer?.asignatura.codigo} · {offer?.grupoActual.nombre} ↔ {offer?.grupoDeseado.nombre}
+      </h1>
+      {isClosed && (
+        <p class="mt-1 text-sm text-gray-400">Esta conversación está cerrada.</p>
+      )}
+    </div>
+
+    <ChatWindow
+      mode="offer"
+      roomId={id!}
+      currentUserId={user.id}
+      currentUserName={user.name}
+      messages={messages}
+      canClose={canClose}
+    />
+  </div>
+</MainLayout>

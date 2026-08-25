@@ -1,0 +1,386 @@
+---
+import MainLayout from '../../../layouts/MainLayout.astro';
+import { serverApi, type UserMe } from '../../../lib/api';
+const api = serverApi(Astro.request);
+
+interface UserDetail extends UserMe { name: string; }
+
+interface TargetUser {
+  id: string; name: string; email: string; role: string;
+  blockReason: string | null; blockedUntil: string | null; createdAt: string;
+  carrera: { nombre: string } | null;
+  curso: { nombre: string } | null;
+}
+interface LogEntry { id: string; action: string; payload: unknown; timestamp: string; }
+interface LoginEntry { id: string; ipAddress: string; location: string; userAgent: string; timestamp: string; }
+interface Details { user: TargetUser; logs: LogEntry[]; loginHistory: LoginEntry[]; }
+interface LogsResponse { logs: LogEntry[]; total: number; page: number; pageSize: number; totalPages: number; }
+
+let me: UserDetail | null = null;
+try { me = await api.get<UserDetail>('/auth/me'); }
+catch { return Astro.redirect('/login'); }
+
+if (me.role !== 'EMBAJADOR' && me.role !== 'PROPIETARIO') {
+  return Astro.redirect('/dashboard');
+}
+
+const { userId } = Astro.params;
+
+// Parámetros de paginación y filtro de logs
+const urlObj       = new URL(Astro.request.url);
+const logPage      = Number(urlObj.searchParams.get('logPage') ?? 1);
+const logAction    = urlObj.searchParams.get('logAction') ?? '';
+const logDateFrom  = urlObj.searchParams.get('logFrom') ?? '';
+const logDateTo    = urlObj.searchParams.get('logTo') ?? '';
+
+let details: Details | null = null;
+let logsData: LogsResponse = { logs: [], total: 0, page: 1, pageSize: 25, totalPages: 1 };
+
+try {
+  details = await api.get<Details>(`/admin/users/${userId}/details`);
+} catch {
+  return Astro.redirect('/admin');
+}
+
+try {
+  const params = new URLSearchParams({ page: String(logPage), pageSize: '25' });
+  if (logAction)   params.set('actionFilter', logAction);
+  if (logDateFrom) params.set('dateFrom', logDateFrom);
+  if (logDateTo)   params.set('dateTo', logDateTo);
+  logsData = await api.get<LogsResponse>(`/admin/users/${userId}/logs?${params}`);
+} catch { /* continuar con array vacío */ }
+
+const { user: target, loginHistory } = details!;
+const isBlocked = target.role === 'BLOQUEADO';
+
+function logPageHref(p: number) {
+  const q = new URLSearchParams(urlObj.searchParams);
+  q.set('logPage', String(p));
+  return `?${q}`;
+}
+---
+
+<MainLayout title={`Auditoría — ${target.name}`}>
+  <div class="mb-5 flex items-center gap-3">
+    <a href="/admin" class="text-sm text-gray-500 hover:text-gray-700">← Panel de administración</a>
+  </div>
+
+  <div id="page-banner" role="alert" aria-live="polite" class="mb-5 hidden rounded-lg border px-4 py-3 text-sm"></div>
+
+  <div class="grid gap-6 lg:grid-cols-3">
+
+    <!-- ── Tarjeta de usuario ───────────────────────────── -->
+    <div class="lg:col-span-1 space-y-4">
+      <div class="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        <div class="mb-4 flex items-start justify-between">
+          <div>
+            <h1 class="text-xl font-bold text-gray-900">{target.name}</h1>
+            <p class="text-sm text-gray-500">{target.email}</p>
+          </div>
+          <span class={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+            isBlocked ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+          }`}>{target.role}</span>
+        </div>
+        <dl class="space-y-2 text-sm">
+          <div class="flex justify-between">
+            <dt class="text-gray-500">Carrera</dt>
+            <dd class="font-medium text-gray-800">{target.carrera?.nombre ?? '—'}</dd>
+          </div>
+          <div class="flex justify-between">
+            <dt class="text-gray-500">Curso</dt>
+            <dd class="font-medium text-gray-800">{target.curso?.nombre ?? '—'}</dd>
+          </div>
+          <div class="flex justify-between">
+            <dt class="text-gray-500">Registrado</dt>
+            <dd class="font-medium text-gray-800">{new Date(target.createdAt).toLocaleDateString('es-ES')}</dd>
+          </div>
+          {isBlocked && (
+            <>
+              <div class="flex justify-between">
+                <dt class="text-gray-500">Motivo bloqueo</dt>
+                <dd class="font-medium text-red-700">{target.blockReason ?? '—'}</dd>
+              </div>
+              <div class="flex justify-between">
+                <dt class="text-gray-500">Hasta</dt>
+                <dd class="font-medium text-red-700">
+                  {target.blockedUntil ? new Date(target.blockedUntil).toLocaleString('es-ES') : 'Permanente'}
+                </dd>
+              </div>
+            </>
+          )}
+        </dl>
+      </div>
+
+      <!-- Bloquear / Desbloquear -->
+      <div class="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        {isBlocked ? (
+          <button id="unblock-btn" type="button" class="btn-primary w-full" data-id={target.id}>
+            Desbloquear usuario
+          </button>
+        ) : (
+          <>
+            <h2 class="mb-4 text-sm font-semibold text-gray-900">Bloquear usuario</h2>
+            <div class="space-y-3">
+              <textarea id="block-reason" rows="2" placeholder="Motivo del bloqueo (obligatorio)…"
+                class="input-field w-full resize-none text-sm"></textarea>
+              <div>
+                <label class="mb-1 block text-xs font-medium text-gray-600">Hasta (dejar vacío = permanente)</label>
+                <input id="block-until" type="datetime-local" class="input-field w-full text-sm" />
+              </div>
+              <button id="block-btn" type="button" class="w-full rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 transition-colors"
+                data-id={target.id}>
+                Aplicar bloqueo
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      <!-- Cambiar contraseña forzado -->
+      <div class="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        <h2 class="mb-4 text-sm font-semibold text-gray-900">Forzar cambio de contraseña</h2>
+        <div class="space-y-3">
+          <input id="force-password" type="password" placeholder="Nueva contraseña (mín. 8 chars)…"
+            class="input-field w-full text-sm" />
+          <button id="force-password-btn" type="button" class="btn-secondary w-full text-sm"
+            data-id={target.id}>
+            Actualizar contraseña
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Historial de accesos + Logs ─────────────────── -->
+    <div class="lg:col-span-2 space-y-6">
+
+      <!-- Historial de accesos -->
+      <div class="rounded-2xl border border-gray-200 bg-white shadow-sm">
+        <div class="border-b border-gray-100 px-6 py-4">
+          <h2 class="font-semibold text-gray-900">Historial de accesos recientes</h2>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+              <tr>
+                <th class="px-5 py-3 text-left">Fecha</th>
+                <th class="px-5 py-3 text-left">IP</th>
+                <th class="px-5 py-3 text-left">Ubicación</th>
+                <th class="px-5 py-3 text-left">Dispositivo</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+              {loginHistory.length === 0 ? (
+                <tr><td colspan="4" class="px-5 py-8 text-center text-gray-400">Sin registros de acceso.</td></tr>
+              ) : loginHistory.map((l) => (
+                <tr class="hover:bg-gray-50">
+                  <td class="px-5 py-3 whitespace-nowrap text-gray-700">
+                    {new Date(l.timestamp).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' })}
+                  </td>
+                  <td class="px-5 py-3 font-mono text-gray-700">{l.ipAddress}</td>
+                  <td class="px-5 py-3 text-gray-700">{l.location}</td>
+                  <td class="px-5 py-3 text-gray-400 max-w-xs truncate" title={l.userAgent}>{l.userAgent}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Logs del usuario (paginados) -->
+      <div class="rounded-2xl border border-gray-200 bg-white shadow-sm">
+        <div class="border-b border-gray-100 px-6 py-4 flex items-center justify-between gap-3 flex-wrap">
+          <h2 class="font-semibold text-gray-900">
+            Registro de actividad
+            <span class="ml-2 text-xs font-normal text-gray-400">{logsData.total} entradas</span>
+          </h2>
+        </div>
+
+        <!-- Mini-filtros para los logs del usuario -->
+        <form method="get" class="border-b border-gray-100 bg-gray-50 px-6 py-3 flex flex-wrap items-end gap-3">
+          {/* Preservar otros query params que no son de logs */}
+          <input type="hidden" name="logPage" value="1" />
+          <div>
+            <label class="mb-0.5 block text-xs font-medium text-gray-500">Acción</label>
+            <input name="logAction" type="text" value={logAction}
+              placeholder="ej: CREATE_OFFER" class="input-field text-xs py-1.5 w-40" />
+          </div>
+          <div>
+            <label class="mb-0.5 block text-xs font-medium text-gray-500">Desde</label>
+            <input name="logFrom" type="date" value={logDateFrom} class="input-field text-xs py-1.5 w-36" />
+          </div>
+          <div>
+            <label class="mb-0.5 block text-xs font-medium text-gray-500">Hasta</label>
+            <input name="logTo" type="date" value={logDateTo} class="input-field text-xs py-1.5 w-36" />
+          </div>
+          <button type="submit" class="btn-primary text-xs py-1.5 px-3">Filtrar</button>
+          {(logAction || logDateFrom || logDateTo) && (
+            <a href={`/admin/users/${userId}`} class="btn-secondary text-xs py-1.5 px-3">Limpiar</a>
+          )}
+        </form>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+              <tr>
+                <th class="px-5 py-3 text-left">Fecha</th>
+                <th class="px-5 py-3 text-left">Acción</th>
+                <th class="px-5 py-3 text-left">Detalle</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100" id="user-logs-body">
+              {logsData.logs.length === 0 ? (
+                <tr><td colspan="3" class="px-5 py-8 text-center text-gray-400">Sin actividad registrada.</td></tr>
+              ) : logsData.logs.map((l) => (
+                <tr class="log-row cursor-pointer hover:bg-gray-50"
+                    data-timestamp={l.timestamp}
+                    data-action={l.action}
+                    data-payload={JSON.stringify(l.payload, null, 2)}>
+                  <td class="px-5 py-3 whitespace-nowrap text-gray-700">
+                    {new Date(l.timestamp).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' })}
+                  </td>
+                  <td class="px-5 py-3">
+                    <span class="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">{l.action}</span>
+                  </td>
+                  <td class="px-5 py-3 font-mono text-xs text-gray-500 max-w-xs truncate"
+                      title={JSON.stringify(l.payload)}>
+                    {JSON.stringify(l.payload)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Paginación de logs -->
+        {logsData.totalPages > 1 && (
+          <div class="border-t border-gray-100 px-5 py-3 flex items-center justify-between gap-2 flex-wrap">
+            <span class="text-xs text-gray-500">
+              Página {logsData.page} de {logsData.totalPages}
+            </span>
+            <div class="flex gap-2">
+              {logsData.page > 1 && (
+                <a href={logPageHref(1)} class="btn-secondary text-xs py-1 px-2.5">« Primera</a>
+              )}
+              {logsData.page > 1 && (
+                <a href={logPageHref(logsData.page - 1)} class="btn-secondary text-xs py-1 px-2.5">← Anterior</a>
+              )}
+              {logsData.page < logsData.totalPages && (
+                <a href={logPageHref(logsData.page + 1)} class="btn-secondary text-xs py-1 px-2.5">Siguiente →</a>
+              )}
+              {logsData.page < logsData.totalPages && (
+                <a href={logPageHref(logsData.totalPages)} class="btn-secondary text-xs py-1 px-2.5">Última »</a>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <!-- Modal de detalle del log -->
+      <dialog id="log-detail-modal" class="rounded-2xl p-8 shadow-xl w-full max-w-lg backdrop:bg-black/50">
+        <div class="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <p class="text-xs text-gray-400" id="ldm-ts"></p>
+            <h3 id="ldm-action" class="mt-1 font-mono text-lg font-bold text-gray-900"></h3>
+          </div>
+          <button id="close-ldm" type="button" aria-label="Cerrar" class="text-gray-400 hover:text-gray-600">
+            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <pre id="ldm-payload"
+             class="overflow-auto rounded-lg bg-gray-900 p-4 text-xs leading-relaxed text-green-400 max-h-72 whitespace-pre-wrap"></pre>
+      </dialog>
+    </div>
+  </div>
+</MainLayout>
+
+<script>
+  import { api, ApiError } from '../../../lib/api';
+
+  const banner = document.getElementById('page-banner')!;
+
+  function showBanner(msg: string, ok = false) {
+    banner.textContent = msg;
+    banner.className = `mb-5 rounded-lg border px-4 py-3 text-sm ${
+      ok ? 'border-green-200 bg-green-50 text-green-800' : 'border-red-200 bg-red-50 text-red-700'
+    }`;
+    banner.classList.remove('hidden');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // ── Modal de detalle de log ──────────────────────────────
+  const ldmModal   = document.getElementById('log-detail-modal') as HTMLDialogElement | null;
+  const ldmTs      = document.getElementById('ldm-ts')!;
+  const ldmAction  = document.getElementById('ldm-action')!;
+  const ldmPayload = document.getElementById('ldm-payload')!;
+  document.getElementById('close-ldm')?.addEventListener('click', () => ldmModal?.close());
+  ldmModal?.addEventListener('click', (e) => { if (e.target === ldmModal) ldmModal.close(); });
+
+  document.querySelectorAll<HTMLTableRowElement>('.log-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      ldmTs.textContent      = new Date(row.dataset.timestamp ?? '').toLocaleString('es-ES');
+      ldmAction.textContent  = row.dataset.action ?? '';
+      ldmPayload.textContent = row.dataset.payload ?? '{}';
+      ldmModal?.showModal();
+    });
+  });
+
+  // ── Bloquear ────────────────────────────────────────────
+  document.getElementById('block-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const targetId = btn.dataset.id!;
+    const reason = (document.getElementById('block-reason') as HTMLTextAreaElement).value.trim();
+    const until  = (document.getElementById('block-until') as HTMLInputElement).value;
+
+    if (!reason) { showBanner('El motivo del bloqueo es obligatorio.'); return; }
+
+    btn.disabled = true;
+    try {
+      await api.post('/admin/users/block', {
+        targetId,
+        reason,
+        blockedUntil: until ? new Date(until).toISOString() : null,
+      });
+      showBanner('Usuario bloqueado correctamente. Recargando…', true);
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      showBanner(err instanceof ApiError ? err.message : 'Error al bloquear');
+      btn.disabled = false;
+    }
+  });
+
+  // ── Desbloquear ─────────────────────────────────────────
+  document.getElementById('unblock-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const targetId = btn.dataset.id!;
+    btn.disabled = true;
+    try {
+      await api.patch(`/admin/users/${targetId}/unblock`);
+      showBanner('Usuario desbloqueado correctamente. Recargando…', true);
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      showBanner(err instanceof ApiError ? err.message : 'Error al desbloquear');
+      btn.disabled = false;
+    }
+  });
+
+  // ── Cambio de contraseña forzado ────────────────────────
+  document.getElementById('force-password-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const targetId = btn.dataset.id!;
+    const newPassword = (document.getElementById('force-password') as HTMLInputElement).value;
+    if (!newPassword) { showBanner('Introduce la nueva contraseña.'); return; }
+
+    btn.disabled = true;
+    try {
+      await api.patch(`/admin/users/${targetId}/password`, { newPassword });
+      showBanner('Contraseña actualizada. La sesión del usuario ha sido revocada.', true);
+      (document.getElementById('force-password') as HTMLInputElement).value = '';
+    } catch (err) {
+      showBanner(err instanceof ApiError ? err.message : 'Error al cambiar contraseña');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+</script>

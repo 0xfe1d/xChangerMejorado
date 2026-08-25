@@ -1,0 +1,335 @@
+// ─────────────────────────────────────────────────────────────
+// xChanger — Prisma Schema
+// Convenciones:
+//   · Soft Delete: campo deletedAt en todas las entidades
+//     excepto Log (inmutable) y Message (inmutable por naturaleza).
+//   · Todos los campos de relación usan snake_case en DB (@map).
+//   · DATABASE_URL  → PgBouncer en modo transacción (app runtime).
+//   · DIRECT_URL    → PostgreSQL directo (migraciones y seeds).
+// ─────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // ?pgbouncer=true indica a Prisma que deshabilite prepared statements
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENUMERACIONES
+// ─────────────────────────────────────────────────────────────
+
+enum Role {
+  ESTUDIANTE
+  EMBAJADOR
+  PROPIETARIO
+  BLOQUEADO
+}
+
+enum OfferStatus {
+  OPEN     // Visible y abierta para aceptación
+  ACCEPTED // Emparejada; activa sala de chat entre las dos partes
+  CLOSED   // Cerrada manualmente por alguna parte
+  INACTIVE // Ocultada automáticamente al bloquearse el creador
+}
+
+enum TicketStatus {
+  OPEN
+  CLOSED
+}
+
+// ─────────────────────────────────────────────────────────────
+// MODELOS
+// ─────────────────────────────────────────────────────────────
+
+/// Cuenta de usuario del sistema.
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String    @map("password_hash")
+  role         Role      @default(ESTUDIANTE)
+
+  // Hash bcrypt del refresh token activo; null = sesión cerrada
+  refreshTokenHash String? @map("refresh_token_hash")
+
+  // ── Bloqueo ──────────────────────────────────────────────
+  // blockedUntil = null cuando role=BLOQUEADO → bloqueo permanente
+  // blockedUntil = DateTime cuando role=BLOQUEADO → bloqueo temporal
+  blockedUntil DateTime? @map("blocked_until")
+  blockReason  String?   @map("block_reason")
+  blockedById  String?   @map("blocked_by_id")
+
+  // ── Carrera y curso en que estudia (no su ámbito de admin) ──
+  carreraId String? @map("carrera_id")
+  cursoId   String? @map("curso_id")
+
+  // ── Soft Delete ───────────────────────────────────────────
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  // ── Relaciones ────────────────────────────────────────────
+  carrera        Carrera?            @relation("UserCarrera", fields: [carreraId], references: [id])
+  curso          Curso?              @relation("UserCurso", fields: [cursoId], references: [id])
+  blockedBy      User?               @relation("BlockHistory", fields: [blockedById], references: [id])
+  blockedByMe    User[]              @relation("BlockHistory")
+  adminScopes    AdminScope[]
+  enrolledIn     UserAsignatura[]
+  offers         Offer[]             @relation("OfferCreator")
+  acceptedOffers Offer[]             @relation("OfferAcceptor")
+  ticketsCreated Ticket[]            @relation("TicketCreator")
+  ticketsHandled Ticket[]            @relation("TicketAdmin")
+  messages       Message[]
+  notifications  Notification[]
+  logs           Log[]
+  loginHistory   LoginHistory[]
+  passwordResets PasswordResetRequest[]
+
+  @@map("users")
+}
+
+/// Historial de accesos (dispositivos vinculados) de un usuario.
+model LoginHistory {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  ipAddress  String   @map("ip_address")
+  location   String
+  userAgent  String   @map("user_agent")
+  timestamp  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("login_history")
+}
+
+/// OTP temporal para recuperación de contraseña (análogo a PendingRegistration).
+model PasswordResetRequest {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  otpCodeHash String   @map("otp_code_hash")
+  expiresAt   DateTime @map("expires_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("password_reset_requests")
+}
+
+/// Registro temporal del flujo OTP durante el proceso de alta.
+/// Se elimina al verificar el OTP y se crea el User definitivo.
+model PendingRegistration {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  carreraId    String   @map("carrera_id")
+  cursoId      String   @map("curso_id")
+  // Hash bcrypt del código OTP de 6 dígitos
+  otpCodeHash  String   @map("otp_code_hash")
+  // JWT ID (jti) del token de 30 min emitido en /register
+  // Garantiza que el OTP solo sea válido para el JWT original
+  jwtJti       String   @unique @map("jwt_jti")
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("pending_registrations")
+}
+
+/// Par (carrera, curso?) que define las competencias de administración de un usuario.
+/// cursoId = null → ámbito de toda la carrera.
+/// cursoId = valor → ámbito reducido a ese curso concreto.
+model AdminScope {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  carreraId String   @map("carrera_id")
+  cursoId   String?  @map("curso_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user    User    @relation(fields: [userId], references: [id])
+  carrera Carrera @relation(fields: [carreraId], references: [id])
+  curso   Curso?  @relation(fields: [cursoId], references: [id])
+
+  // En PostgreSQL los NULLs no colisionan en índices únicos,
+  // por lo que puede existir (userId, carreraId, NULL) y
+  // (userId, carreraId, cursoId_X) simultáneamente.
+  @@unique([userId, carreraId, cursoId])
+  @@map("admin_scopes")
+}
+
+/// Titulación universitaria. Nivel raíz de la jerarquía académica.
+model Carrera {
+  id        String    @id @default(cuid())
+  nombre    String    @unique
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  cursos        Curso[]
+  adminScopes   AdminScope[]
+  usersEnrolled User[]      @relation("UserCarrera")
+
+  @@map("carreras")
+}
+
+/// Año académico dentro de una carrera (ej: "1º", "2º Semestre A").
+model Curso {
+  id        String    @id @default(cuid())
+  nombre    String
+  carreraId String    @map("carrera_id")
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  carrera       Carrera      @relation(fields: [carreraId], references: [id])
+  asignaturas   Asignatura[]
+  adminScopes   AdminScope[]
+  usersEnrolled User[]       @relation("UserCurso")
+
+  @@unique([nombre, carreraId])
+  @@map("cursos")
+}
+
+/// Asignatura perteneciente a un Curso. Código único en todo el sistema.
+model Asignatura {
+  id        String    @id @default(cuid())
+  nombre    String
+  codigo    String    @unique
+  cursoId   String    @map("curso_id")
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  curso         Curso            @relation(fields: [cursoId], references: [id])
+  grupos        Grupo[]
+  enrolledUsers UserAsignatura[]
+  offers        Offer[]
+
+  @@map("asignaturas")
+}
+
+/// Grupo de prácticas / teoría de una Asignatura.
+model Grupo {
+  id           String    @id @default(cuid())
+  nombre       String
+  asignaturaId String    @map("asignatura_id")
+  deletedAt    DateTime? @map("deleted_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  asignatura    Asignatura @relation(fields: [asignaturaId], references: [id])
+  offersDeseado Offer[]    @relation("GrupoDeseado")
+  offersActual  Offer[]    @relation("GrupoActual")
+
+  @@unique([nombre, asignaturaId])
+  @@map("grupos")
+}
+
+/// Tabla de unión: asignaturas en las que el usuario está matriculado.
+model UserAsignatura {
+  userId       String   @map("user_id")
+  asignaturaId String   @map("asignatura_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user       User       @relation(fields: [userId], references: [id])
+  asignatura Asignatura @relation(fields: [asignaturaId], references: [id])
+
+  @@id([userId, asignaturaId])
+  @@map("user_asignaturas")
+}
+
+/// Anuncio de cambio de grupo publicado por un estudiante.
+model Offer {
+  id             String      @id @default(cuid())
+  userId         String      @map("user_id")
+  asignaturaId   String      @map("asignatura_id")
+  grupoDeseadoId String      @map("grupo_deseado_id")
+  grupoActualId  String      @map("grupo_actual_id")
+  status         OfferStatus @default(OPEN)
+  // Estudiante que acepta el intercambio
+  acceptedById   String?     @map("accepted_by_id")
+  deletedAt      DateTime?   @map("deleted_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  user         User       @relation("OfferCreator", fields: [userId], references: [id])
+  asignatura   Asignatura @relation(fields: [asignaturaId], references: [id])
+  grupoDeseado Grupo      @relation("GrupoDeseado", fields: [grupoDeseadoId], references: [id])
+  grupoActual  Grupo      @relation("GrupoActual", fields: [grupoActualId], references: [id])
+  acceptedBy   User?      @relation("OfferAcceptor", fields: [acceptedById], references: [id])
+  // Chat entre las dos partes una vez la oferta es ACCEPTED
+  messages     Message[]
+
+  @@map("offers")
+}
+
+/// Ticket de soporte abierto por un usuario a su embajada.
+model Ticket {
+  id        String       @id @default(cuid())
+  userId    String       @map("user_id")
+  // adminId puede cambiar si el ámbito del administrador cambia
+  adminId   String?      @map("admin_id")
+  asunto    String
+  status    TicketStatus @default(OPEN)
+  deletedAt DateTime?    @map("deleted_at")
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  user     User      @relation("TicketCreator", fields: [userId], references: [id])
+  admin    User?     @relation("TicketAdmin", fields: [adminId], references: [id])
+  messages Message[]
+
+  @@map("tickets")
+}
+
+/// Mensaje de chat. Polimórfico: pertenece a un Ticket O a una Offer.
+/// Exactamente uno de ticketId / offerId debe ser no nulo (enforced en la capa de servicio).
+model Message {
+  id        String   @id @default(cuid())
+  authorId  String   @map("author_id")
+  ticketId  String?  @map("ticket_id")
+  offerId   String?  @map("offer_id")
+  content   String
+  // timestamp inmutable: no hay updatedAt (los mensajes no se editan)
+  timestamp DateTime @default(now())
+
+  author User    @relation(fields: [authorId], references: [id])
+  ticket Ticket? @relation(fields: [ticketId], references: [id])
+  offer  Offer?  @relation(fields: [offerId], references: [id])
+
+  @@map("messages")
+}
+
+/// Notificación persistente enviada al usuario (también por email).
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  asunto    String
+  contenido String
+  isRead    Boolean  @default(false) @map("is_read")
+  timestamp DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("notifications")
+}
+
+/// Registro de auditoría del sistema. INMUTABLE.
+/// · Sin deletedAt: los logs nunca se borran ni se ocultan.
+/// · Sin updatedAt: un log no se modifica después de su creación.
+/// · payload: JSON libre con los parámetros específicos de la acción.
+model Log {
+  id        String   @id @default(cuid())
+  timestamp DateTime @default(now())
+  userId    String   @map("user_id")
+  action    String
+  payload   Json
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("logs")
+}
