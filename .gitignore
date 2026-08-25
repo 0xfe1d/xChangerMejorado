@@ -1,1 +1,77 @@
+# ==========================================
+# SECRETOS Y ENTORNOS (CONFIDENCIAL)
+# ==========================================
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+*secret*
+credentials.json
+client_secret.json
+
+# ==========================================
+# DEPENDENCIAS
+# ==========================================
+node_modules/
+.pnp
+.pnp.js
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ==========================================
+# LOGS
+# ==========================================
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ==========================================
+# BUILD Y CACHÉ (Astro / TS / Node)
+# ==========================================
+dist/
+build/
+out/
+.astro/
+.vercel/
+.netlify/
+.cache/
+.tsbuildinfo
+
+# ==========================================
+# BASES DE DATOS LOCALES
+# ==========================================
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+/backend/prisma/*.db
+/backend/prisma/*.sqlite
+
+# ==========================================
+# ARCHIVOS DEL SISTEMA OPERATIVO
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ==========================================
+# IDEs Y EDITORES
+# ==========================================
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
