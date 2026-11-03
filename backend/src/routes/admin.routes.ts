@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { Role } from '@prisma/client';
 import { authenticate } from '../middleware/authenticate';
-import { requireRole, requireScope, requireScopeViaCurso, requireScopeViaAsignatura, requireScopeViaGrupo } from '../middleware/authorize';
+import { requireRole, requireScope, requireScopeViaCurso, requireScopeViaAsignatura, requireScopeViaGrupo, requireScopeViaUser } from '../middleware/authorize';
+import * as mfaController from '../controllers/mfa.controller';
 import * as adminController from '../controllers/admin.controller';
 
 const router = Router();
 
-// Todos los endpoints de admin requieren autenticación
+// Todos los endpoints de admin requieren sesión web: ningún canal accede a /admin (RF-TGB-11)
 router.use(authenticate);
 
 // Solo EMBAJADOR o PROPIETARIO
@@ -36,6 +37,7 @@ router.post(
 router.delete(
   '/courses/:id',
   isAdmin,
+  requireScopeViaCurso('id'), // faltaba la comprobación de ámbito (RF-ACA-09)
   adminController.deleteCurso,
 );
 
@@ -56,6 +58,8 @@ router.get('/users/:userId/logs', isAdmin, adminController.getUserLogs_);
 router.post('/users/block', isAdmin, adminController.blockUser);
 router.patch('/users/:id/unblock', isAdmin, adminController.unblockUser);
 router.patch('/users/:userId/password', isAdmin, adminController.adminForcePassword);
+// EP-C-28: restablecer MFA de un usuario del ámbito
+router.post('/users/:id/mfa/reset', isAdmin, requireScopeViaUser('id'), mfaController.adminReset);
 
 // ── Embajadores (solo PROPIETARIO) ───────────────────────────
 router.get('/ambassadors', isOwner, adminController.listEmbajadores);

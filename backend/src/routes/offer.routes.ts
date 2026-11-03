@@ -1,18 +1,17 @@
 import { Router } from 'express';
-import { authenticate } from '../middleware/authenticate';
+import { allowClients, authenticate } from '../middleware/authenticate';
+import { idempotency } from '../middleware/idempotency';
 import * as offerController from '../controllers/offer.controller';
 
 const router = Router();
+const webOrChannel = [allowClients('web', 'channel'), authenticate];
 
-// Todas las rutas requieren autenticación
-router.use(authenticate);
-
-router.get('/', offerController.listOffers);
-router.get('/me', offerController.myOffers);
-router.get('/:id', offerController.getOffer);
-router.post('/', offerController.createOffer);
-router.post('/:id/accept', offerController.acceptOffer);
-router.post('/:id/messages', offerController.sendOfferMessage);
-router.patch('/:id/close', offerController.closeOffer);
+router.get('/', ...webOrChannel, offerController.listOffers);           // EP-C-12
+router.get('/me', ...webOrChannel, offerController.myOffers);           // EP-C-13
+router.get('/:id', authenticate, offerController.getOffer);             // solo web
+router.post('/', ...webOrChannel, idempotency(), offerController.createOffer);                 // EP-R-10
+router.post('/:id/accept', ...webOrChannel, idempotency(), offerController.acceptOffer);       // EP-R-11
+router.post('/:id/messages', ...webOrChannel, idempotency(), offerController.sendOfferMessage);// EP-R-13
+router.patch('/:id/close', ...webOrChannel, offerController.closeOffer);                       // EP-R-12
 
 export default router;

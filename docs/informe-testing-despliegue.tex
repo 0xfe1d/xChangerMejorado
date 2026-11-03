@@ -1,0 +1,1945 @@
+\documentclass[11pt,a4paper]{report}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-noshorthands]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[a4paper,margin=2.3cm,headheight=14pt]{geometry}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{amssymb}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{enumitem}
+\usepackage[most]{tcolorbox}
+\usepackage[hidelinks,bookmarksnumbered]{hyperref}
+
+\definecolor{marca}{HTML}{8B1E3F}
+\definecolor{tinta}{HTML}{1F2933}
+\definecolor{suave}{HTML}{F4F1F2}
+
+\titleformat{\chapter}[display]{\normalfont\bfseries\color{marca}}{\large\MakeUppercase{\chaptertitlename}\ \thechapter}{4pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{-10pt}{18pt}
+\titleformat{\section}{\normalfont\Large\bfseries\color{tinta}}{\thesection}{0.8em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries\color{marca}}{\thesubsection}{0.8em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{gray}xChanger --- Informe de Testing y Despliegue}
+\fancyhead[R]{\small\color{gray}v1.0}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\newtcolorbox{pruebabox}[2]{enhanced,breakable,colback=white,colframe=marca!55,colbacktitle=suave,
+  coltitle=tinta,fonttitle=\bfseries\small,title={P-#1\quad #2},boxrule=0.5pt,arc=1.5pt,
+  left=5pt,right=5pt,top=3pt,bottom=3pt,before skip=6pt,after skip=6pt,fontupper=\small}
+
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+
+\begin{document}
+
+\begin{titlepage}
+\centering
+\vspace*{3cm}
+{\color{marca}\rule{\linewidth}{1pt}}\\[0.6cm]
+{\Huge\bfseries xChanger\\[0.3cm]}
+{\LARGE Informe Oficial de Testing y Despliegue\\[0.3cm]}
+{\large Core (API REST) tras el escalado: canal Telegram y MFA con XOTP v1}\\[0.4cm]
+{\color{marca}\rule{\linewidth}{1pt}}\\[2cm]
+\begin{tabular}{@{}ll@{}}
+\toprule
+Proyecto & xChangerMejorado \\
+Ámbito & Core (backend Express, Prisma, Socket.io) \\
+Fases cubiertas & F0 (preparación del core), F1 (MFA), F2 (bot MVP) \\
+Documentos de referencia & Requisitos v1.0; Arquitectura v1.0; Escalado v1.0 \\
+Fecha & Noviembre de 2026 \\
+Versión & 1.0 \\
+\bottomrule
+\end{tabular}
+\vfill
+{\small Las referencias del tipo RF-, RA-, RNF-, CA-, DV-, AR- pertenecen al documento de Requisitos v1.0 y al de Arquitectura v1.0; las del tipo EP-, ADR-16 en adelante, RF-TGB-, RF-MFA- y CA-13 en adelante, al documento de Escalado.}
+\end{titlepage}
+
+\tableofcontents
+
+%════════════════════════════════════════════════════════════════════
+\chapter{Resumen ejecutivo}
+
+El core de xChanger se ha ampliado para servir a dos clientes nuevos, el bot de Telegram y el mfa-service, sin romper el contrato existente con el frontend. Este informe documenta la verificación completa de esa evolución y la arquitectura con la que se despliega.
+
+\begin{center}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Nivel & Casos & Resultado & Herramienta \\
+\midrule
+Unitarias & 47 & 47 superados & Jest + ts-jest \\
+Integración & 102 & 102 superados & Jest + Supertest + PostgreSQL + Redis \\
+Extremo a extremo & 18 & 18 superados & Cypress 13 + Mailpit + stub HTTP del mfa-service \\
+\midrule
+\textbf{Total} & \textbf{167} & \textbf{167 superados} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Cobertura de aceptación.} Los 22 escenarios de aceptación (CA-01 a CA-12 del documento original y CA-13 a CA-22 del escalado) están automatizados; los de mayor riesgo se verifican en dos niveles (integración y E2E).
+
+\textbf{Desviaciones corregidas y blindadas por pruebas.} DV-01 (vencimiento de bloqueos), DV-02 (autobloqueo y bloqueo de Propietarios), DV-03 (doble aceptación), DV-05 (HTML sin escapar), DV-08 (sin límite de intentos), AR-04 (acoplamiento a Socket.io), AR-05 (cobertura de ámbito por curso), AR-06 (transiciones no atómicas) y AR-10 (correos sin reintento). Durante el trabajo se detectaron y corrigieron además dos defectos no inventariados: la eliminación de nodos académicos no cancelaba las ofertas (RF-ACA-06) y el borrado de cursos no comprobaba el ámbito (RF-ACA-09).
+
+\textbf{Fuera de alcance de esta entrega.} El mfa-service y el bot de Telegram son microservicios independientes; en las pruebas se sustituyen por dobles que respetan sus contratos. Quedan pendientes EP-C-15 y EP-C-16 (fase F3), la comprobación de ámbito en tickets (DV-04) y la confirmación de borrado en servidor (DV-06).
+
+%════════════════════════════════════════════════════════════════════
+\chapter{Testing}
+
+\section{Estrategia}
+
+La estrategia sigue una pirámide de tres niveles alineada con los métodos de verificación del documento de requisitos (§11.1: los RF y RI se verifican con test automático).
+
+\begin{description}[style=nextline,leftmargin=1.2cm]
+\item[Unitarias] Lógica pura: sin red ni base de datos. Detectan regresiones en milisegundos.
+\item[Integración] El core completo frente a sus dependencias reales (PostgreSQL y Redis). Es el nivel con más casos porque la mayoría de los requisitos dependen de la base de datos: transacciones, borrado lógico, unicidades, ámbito y concurrencia.
+\item[Extremo a extremo] El proceso del core tal como se despliega, consumido por HTTP desde fuera, con correo real y con un mfa-service por red. Valida los contratos entre servicios y los flujos que atraviesan varios componentes.
+\end{description}
+
+\subsection{Principios de diseño de las pruebas}
+\begin{itemize}[leftmargin=*]
+\item \textbf{Trazabilidad:} cada caso cita en su título el requisito o escenario que valida; la columna \emph{Requisito} de este informe lo amplía.
+\item \textbf{Aislamiento:} antes de cada caso de integración se vacían las 21 tablas y Redis; la ejecución es en serie para que ningún caso observe datos de otro.
+\item \textbf{Dependencias reales donde importan:} la concurrencia (CA-05), la idempotencia y el bus de eventos solo pueden comprobarse con PostgreSQL y Redis reales; por eso no se simulan.
+\item \textbf{Dobles fieles al contrato:} la simulación del mfa-service implementa ventana $\pm1$, antirreplay, bloqueo tras 5 fallos y códigos de recuperación de un solo uso, y supera los vectores RFC 6238 obligatorios (§7.2.3). Su reloj es inyectable para obtener pasos TOTP posteriores sin esperar 30 segundos.
+\item \textbf{El cliente externo no se implementa:} el bot y la app XOTP quedan fuera del alcance; las pruebas reproducen sus peticiones HTTP según los contratos de los §9 y §10 del escalado.
+\end{itemize}
+
+\subsection{Entorno de ejecución}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Componente & Configuración \\
+\midrule
+PostgreSQL 15 & Contenedor efímero en \texttt{tmpfs}, puerto 55432; migraciones aplicadas por \texttt{globalSetup}. \\
+Redis 7 & Contenedor efímero, puerto 56379. \\
+Mailpit & SMTP en 51025 y API en 58025; Cypress lee de ahí los OTP reales. \\
+mfa-service & Integración: \texttt{FakeMfaGateway} en proceso. E2E: \texttt{test/stubs/mfa-stub.ts} por HTTP en 58081, que valida el JWT de servicio contra el JWKS del core. \\
+Core & Integración: \texttt{createApp()} sin abrir puerto. E2E: \texttt{src/server.ts} en el puerto 3100 con el outbox y los consumidores activos. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Ejecución}
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Orden & Qué ejecuta \\
+\midrule
+\texttt{npm test} & Unitarias \\
+\texttt{npm run test:integration} & Levanta la infraestructura y ejecuta integración en serie \\
+\texttt{npm run test:e2e} & Levanta infraestructura, stub y core; ejecuta Cypress \\
+\texttt{npm run test:all} & Los tres niveles en orden \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Matriz de escenarios de aceptación}
+\begin{center}
+\small
+\begin{longtable}{@{}lp{6.2cm}cc@{}}
+\toprule
+Escenario & Descripción & Integración & E2E \\
+\midrule
+\endhead
+CA-01 & Registro con dominio ajeno & \checkmark & \checkmark \\
+CA-02 & OTP correcto crea la cuenta & \checkmark & \checkmark \\
+CA-03 & OTP caducado & \checkmark & \\
+CA-04 & Búsqueda complementaria & \checkmark & \checkmark \\
+CA-05 & Aceptación concurrente & \checkmark & \\
+CA-06 & Mensaje y notificaciones & \checkmark & \checkmark \\
+CA-07 & Bloqueo fuera de ámbito & \checkmark & \\
+CA-08 & Bloqueo: ofertas inactivas y sesión inválida & \checkmark & \\
+CA-09 & Vencimiento de bloqueo temporal & \checkmark & \\
+CA-10 & Eliminación con referencias & \checkmark & \\
+CA-11 & Mensaje en ticket cerrado & \checkmark & \\
+CA-12 & Log limitado al ámbito & \checkmark & \\
+CA-13 & Activación de MFA & \checkmark & \checkmark \\
+CA-14 & Login con MFA sin cookies previas & \checkmark & \checkmark \\
+CA-15 & Código reutilizado & \checkmark & \checkmark \\
+CA-16 & QR con firma alterada & \multicolumn{2}{c}{Responsabilidad de la app XOTP} \\
+CA-17 & mfa-service caído & \checkmark & \checkmark \\
+CA-18 & Vinculación por código & \checkmark & \checkmark \\
+CA-19 & Update reintentado & \checkmark & \checkmark \\
+CA-20 & Bloqueo de usuario vinculado & \checkmark & \checkmark \\
+CA-21 & Token de canal fuera de política & \checkmark & \checkmark \\
+CA-22 & Login por bot con MFA & \checkmark & \checkmark \\
+\bottomrule
+\end{longtable}
+\end{center}
+CA-16 verifica la firma Ed25519 en la aplicación autenticadora, que queda fuera del core por la restricción de alcance; el core no genera ni verifica la firma del QR (lo hace el mfa-service, ADR-25).
+
+\section*{Catálogo detallado de pruebas}
+\addcontentsline{toc}{section}{Catálogo detallado de pruebas}
+A continuación se documenta cada prueba con su tipo, el requisito validado y su justificación, el escenario y el resultado esperado. La numeración P-\emph{n} es correlativa en todo el informe.
+
+\section{Pruebas unitarias}
+Verifican la lógica aislada del core sin base de datos ni red: utilidades, contrato de error, autenticación de servicios, cliente del mfa-service y reglas de validación. Se ejecutan con \texttt{npm test} en aproximadamente un segundo.
+\subsection{Utilidades de paginación, vinculación, criptografía y formato}
+\noindent\textit{Fichero:} \texttt{test/unit/utils.test.ts}\par\medskip
+
+\begin{pruebabox}{1}{codifica y decodifica createdAt + id de forma opaca}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}5.6 (paginación por cursor), EP-C-12, EP-C-13 \\
+Justificación & El escalado exige que los listados admitan \texttt{limit} y \texttt{cursor} opacos para clientes no web. Un cursor que expusiera identificadores internos permitiría manipular la paginación; por eso se exige que el cursor sea opaco y reversible solo por el servidor. \\
+Escenario & Se codifica la posición \texttt{\{createdAt, id\}} de un elemento y se decodifica de nuevo. \\
+Resultado esperado & El cursor no contiene el identificador en claro y la decodificación devuelve exactamente la posición original. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{2}{devuelve null ante cursores manipulados}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}5.6; RV-05 (validación de identificadores) \\
+Justificación & Un cursor es entrada del cliente y, por RNF-01, toda entrada debe validarse. Si un cursor alterado se aceptara, podría provocar errores internos o consultas no previstas. \\
+Escenario & Se decodifican un texto que no es base64 y un JSON con tipos incorrectos. \\
+Resultado esperado & La función devuelve \texttt{null} en ambos casos; el controlador lo traduce a 400. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{3}{genera la condición "después de" para orden descendente estable}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RF-OFE-05 y RF-OFE-11 (orden de más reciente a más antigua); escalado \S{}5.6 \\
+Justificación & Los requisitos originales fijan el orden descendente por fecha. Con cursor, dos ofertas creadas en el mismo instante podrían repetirse u omitirse entre páginas; el desempate por \texttt{id} garantiza un orden total. \\
+Escenario & Se genera la condición de Prisma para una posición dada y para ausencia de cursor. \\
+Resultado esperado & Se obtiene \texttt{createdAt < t OR (createdAt = t AND id < i)}; sin cursor, una condición vacía. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{4}{usa 8 caracteres del alfabeto sin ambigüedades}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}6.4 (userCode de vinculación), EP-C-03 \\
+Justificación & El código que el estudiante teclea en la web debe ser legible y difícil de confundir. El diseño fija 8 caracteres de un alfabeto sin 0, 1, O ni I. \\
+Escenario & Se generan 200 códigos aleatorios. \\
+Resultado esperado & Todos tienen longitud 8, pertenecen al alfabeto definido y no contienen caracteres ambiguos. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{5}{se muestra con guion y se normaliza sin distinguir mayúsculas}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}6.4; EP-C-04 ("con o sin guion; insensible a mayúsculas") \\
+Justificación & EP-C-04 especifica que el \texttt{userCode} se acepta con o sin guion y sin distinguir mayúsculas, porque el usuario lo copia a mano desde Telegram. \\
+Escenario & Se formatea \texttt{ABCD2345} y se normalizan entradas en minúsculas, con guion y con espacios. \\
+Resultado esperado & Se muestra \texttt{ABCD-2345} y todas las variantes se normalizan a \texttt{ABCD2345}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{6}{rechaza longitudes o caracteres fuera del alfabeto}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & EP-C-04 (errores 404 LINK\_NOT\_FOUND); RNF-01 \\
+Justificación & Un código mal formado no debe llegar a la base de datos; se rechaza antes para evitar consultas inútiles y respuestas ambiguas. \\
+Escenario & Se normalizan un código de 7 caracteres y otro que incluye un \texttt{0}. \\
+Resultado esperado & Ambos devuelven \texttt{null}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{7}{enmascara el email para la etiqueta XOTP}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}7.2.2 (campo \texttt{acc} del payload) y RNF-09 (privacidad) \\
+Justificación & El QR de aprovisionamiento muestra una etiqueta de cuenta en la app autenticadora; el diseño exige que esté enmascarada para no exponer el correo completo a quien vea la pantalla. \\
+Escenario & Se enmascara \texttt{ana.\allowbreak{}perez@alumnos.\allowbreak{}unican.\allowbreak{}es}. \\
+Resultado esperado & Se obtiene \texttt{a***@alumnos.\allowbreak{}unican.\allowbreak{}es}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{8}{el hash canónico no depende del orden de claves (idempotencia)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}5.6 (Idempotency-Key), EP-C-29 \\
+Justificación & La idempotencia compara el hash del cuerpo para distinguir "misma petición" de "misma clave con otro cuerpo" (422). Si el hash dependiera del orden de las claves JSON, un reintento legítimo se rechazaría como conflicto. \\
+Escenario & Se calculan hashes de dos objetos con las mismas claves en distinto orden, y de dos objetos distintos. \\
+Resultado esperado & Los dos primeros coinciden; los distintos no. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{9}{el token opaco de refresco tiene 43 caracteres base64url (256 bits)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & ADR-18; \S{}5.9 (ChannelSession con hash SHA-256); EP-C-06 (refreshToken de 43 caracteres) \\
+Justificación & El diseño justifica guardar el refresh token de canal con SHA-256 (y no bcrypt) porque tiene 256 bits de entropía. Esta prueba verifica que el token cumple esa premisa y el formato del contrato. \\
+Escenario & Se genera un token y se calcula su hash. \\
+Resultado esperado & El token cumple \texttt{\textasciicircum{}[A-Za-z0-9\_-]\{43\}\$} y el hash tiene 64 caracteres hexadecimales. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{10}{compara cadenas en tiempo constante}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RNF-01 (OWASP: fugas por tiempo); ADR-20 (secretos de cliente) \\
+Justificación & La comparación del secreto de cliente de servicio no debe revelar por tiempo cuántos caracteres coinciden. \\
+Escenario & Se comparan cadenas iguales y cadenas de distinta longitud. \\
+Resultado esperado & Devuelve verdadero y falso respectivamente, sin lanzar excepciones por diferencia de longitud. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{11}{escapa HTML del contenido de correos (RF-NOT-06)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RF-NOT-06; desviación DV-05 \\
+Justificación & El documento de requisitos identificó (DV-05) que el HTML de los correos incorporaba contenido sin escapar, abriendo la puerta a inyección de HTML. Esta prueba fija la corrección. \\
+Escenario & Se escapa una etiqueta \texttt{<img>} con atributo \texttt{onerror}, comillas simples y \texttt{\&}. \\
+Resultado esperado & Todos los caracteres especiales quedan convertidos en entidades HTML. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{12}{valida CUID y genera ULID ordenables}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RV-05 (identificadores CUID); \S{}5.9 y \S{}11 (Outbox e id de evento ULID) \\
+Justificación & RV-05 obliga a validar el formato de los identificadores antes de usarlos. Los eventos usan ULID para que el outbox se publique en orden de creación. \\
+Escenario & Se validan un CUID y una cadena maliciosa; se generan dos ULID consecutivos. \\
+Resultado esperado & Solo el CUID es válido y el segundo ULID es lexicográficamente mayor que el primero. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Circuit breaker del cliente MFA}
+\noindent\textit{Fichero:} \texttt{test/unit/circuit-breaker.test.ts}\par\medskip
+
+\begin{pruebabox}{13}{se abre tras 5 fallos consecutivos y deja pasar una prueba a los 30 s}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}10.3 ("tras 5 fallos consecutivos abre 30 s"); AR-15 \\
+Justificación & El login de usuarios con MFA depende del mfa-service. Si está caído, seguir llamándolo multiplicaría la latencia; el circuito abierto responde 503 de inmediato y, pasados 30 s, prueba de nuevo. \\
+Escenario & Se registran 4 y luego 5 fallos con un reloj controlado; se avanza el reloj 30 s. \\
+Resultado esperado & Tras 4 fallos sigue cerrado; tras 5 se abre y no admite peticiones; a los 30 s pasa a semiabierto. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{14}{un fallo en semiabierto vuelve a abrir; un éxito lo cierra}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}10.3; \S{}7.5 (disponibilidad) \\
+Justificación & El estado semiabierto deja pasar una sola prueba. Si falla, el servicio sigue degradado y debe volver a abrirse; si tiene éxito, el sistema se recupera solo. \\
+Escenario & Se abre el circuito, se registra un fallo en semiabierto y después un éxito. \\
+Resultado esperado & El fallo reabre el circuito; el éxito posterior lo cierra. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{15}{un éxito reinicia el contador de fallos}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}10.3 (fallos consecutivos) \\
+Justificación & El umbral habla de fallos consecutivos: fallos aislados intercalados con éxitos no deben abrir el circuito. \\
+Escenario & Se alternan 4 fallos, un éxito y otros 4 fallos. \\
+Resultado esperado & El circuito permanece cerrado. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Contrato de error homogéneo}
+\noindent\textit{Fichero:} \texttt{test/unit/error-contract.test.ts}\par\medskip
+
+\begin{pruebabox}{16}{incluye error, code estable y requestId (eco de X-Request-Id)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}5.10; \S{}9.1 (cabecera X-Request-Id) \\
+Justificación & El bot interpreta el campo \texttt{code} (estable) en lugar del mensaje; el campo \texttt{error} se mantiene por compatibilidad con el frontend. \texttt{requestId} permite correlacionar errores con logs y eventos. \\
+Escenario & Un manejador lanza un \texttt{AppError(409, OFFER\_ALREADY\_CLOSED)} y la petición trae \texttt{X-Request-Id}. \\
+Resultado esperado & Respuesta 409 con exactamente \texttt{\{error, code, requestId\}} y la misma cabecera de vuelta. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{17}{asigna un code por defecto a los errores antiguos sin code}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}5.10 ("progresivamente las existentes") \\
+Justificación & No todos los errores heredados declaran un código. Para que el contrato sea homogéneo sin reescribir todo el core, cada estado HTTP recibe un código por defecto. \\
+Escenario & Se crea un error 404 sin código y se consulta el código por defecto de 429. \\
+Resultado esperado & Se obtienen \texttt{NOT\_FOUND} y \texttt{RATE\_LIMITED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{18}{expone details.retryAfter y la cabecera Retry-After}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & \S{}7.2.5 (423 con retryAfter); RNF-03 (429) \\
+Justificación & Los clientes deben saber cuánto esperar tras un bloqueo de MFA o un límite de intentos. \\
+Escenario & Se lanza un error 423 \texttt{MFA\_LOCKED} con \texttt{retryAfter: 30}. \\
+Resultado esperado & El cuerpo incluye \texttt{details.\allowbreak{}retryAfter = 30} y la cabecera \texttt{Retry-After: 30}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{19}{mantiene \texttt{detail} para el modal de cuenta bloqueada del frontend}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RF-AUT-10; RUI-03 (modal de bloqueo) \\
+Justificación & El frontend actual lee el objeto \texttt{detail} del login bloqueado para mostrar motivo y fecha. El nuevo contrato no puede romper esa lectura. \\
+Escenario & Se lanza un error 403 \texttt{ACCOUNT\_BLOCKED} con motivo. \\
+Resultado esperado & La respuesta incluye \texttt{detail} con \texttt{blocked: true}, \texttt{permanent} y \texttt{reason}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{20}{oculta los errores inesperados tras un 500 genérico}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RUI-10; RNF-01; Arquitectura \S{}5.1 (errorHandler) \\
+Justificación & Los mensajes de error no deben exponer detalles internos. Una excepción no controlada podría filtrar rutas, consultas o secretos. \\
+Escenario & Un manejador lanza un \texttt{Error} cuyo mensaje contiene la palabra "secreto". \\
+Resultado esperado & Respuesta 500 con código \texttt{INTERNAL\_ERROR} y sin el texto original. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{21}{genera un X-Request-Id si no llega o es inválido}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}9.1; F4 (trazas con X-Request-Id) \\
+Justificación & Un identificador de petición controlado por el cliente sin validar podría inyectar contenido en logs. Si falta o es inválido se genera uno propio. \\
+Escenario & Se envía \texttt{X-Request-Id: "a b"} (con espacio). \\
+Resultado esperado & La respuesta trae un ULID de 26 caracteres generado por el servidor. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{22}{responde 413 PAYLOAD\_TOO\_LARGE ante cuerpos demasiado grandes (RV-07)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RV-07 (cuerpo máximo 50 KB); \S{}9.1 \\
+Justificación & El límite de cuerpo mitiga el abuso de recursos. El error debe seguir el contrato homogéneo en lugar de la página por defecto de Express. \\
+Escenario & Se envía un cuerpo que supera el límite configurado en la aplicación de prueba. \\
+Resultado esperado & Respuesta 413 con código \texttt{PAYLOAD\_TOO\_LARGE}. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Cliente HTTP del mfa-service}
+\noindent\textit{Fichero:} \texttt{test/unit/mfa-http-client.test.ts}\par\medskip
+
+\begin{pruebabox}{23}{envía un JWT de servicio del core con aud=mfa-service y scope mfa:manage}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}10.2 (cabeceras comunes); ADR-20; principio de confianza cero (\S{}3.1) \\
+Justificación & Toda llamada entre servicios lleva credencial verificable aunque circule por la red privada. El mfa-service solo debe aceptar tokens emitidos para él. \\
+Escenario & Se intercepta la llamada a \texttt{/\allowbreak{}v1/\allowbreak{}verify} y se valida el Bearer contra el JWKS del core. \\
+Resultado esperado & El token verifica con \texttt{iss=xchanger-core}, \texttt{aud=mfa-service} y \texttt{scope=mfa:manage}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{24}{traduce 423 a MFA\_LOCKED con retryAfter}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RF-MFA-06; \S{}7.2.5 regla 6 \\
+Justificación & Tras 5 fallos el factor se bloquea 15 minutos; el core debe propagar el bloqueo con su tiempo de espera. \\
+Escenario & El mfa-service simulado responde 423 con \texttt{retryAfter: 120}. \\
+Resultado esperado & Se lanza \texttt{MFA\_LOCKED} (423) con \texttt{details.\allowbreak{}retryAfter = 120}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{25}{devuelve el resultado inválido (REPLAYED) sin lanzar}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RF-MFA-05 (antirreplay); EP-M-03 \\
+Justificación & Un código inválido es un resultado de negocio, no un fallo de transporte: no debe contar para el circuit breaker. \\
+Escenario & El servicio responde 200 con \texttt{\{valid: false, reason: REPLAYED\}}. \\
+Resultado esperado & El cliente devuelve el objeto tal cual. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{26}{falla cerrado con 503 MFA\_SERVICE\_UNAVAILABLE ante caída o 5xx}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & ADR-23; \S{}10.3 ("nunca se degrada a entrar sin segundo factor"); AR-15 \\
+Justificación & Es el requisito de seguridad más importante de la integración: si el mfa-service no responde, el core debe denegar, nunca aceptar. \\
+Escenario & Se simulan un error de conexión y una respuesta 502. \\
+Resultado esperado & Ambos producen 503 \texttt{MFA\_SERVICE\_UNAVAILABLE}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{27}{respeta el tiempo límite de la llamada}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}7.5 y \S{}10.3 (tiempo límite de 2 s) \\
+Justificación & Un mfa-service lento no debe bloquear indefinidamente las peticiones de login. \\
+Escenario & El servicio simulado no responde nunca; el límite se fija en 50 ms. \\
+Resultado esperado & La llamada se aborta y produce 503. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{28}{abre el circuito tras 5 fallos y deja de llamar}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}10.3 \\
+Justificación & Comprueba la integración real del circuit breaker en el cliente, no solo la clase aislada. \\
+Escenario & Se encadenan 6 llamadas contra un servicio que siempre responde 500. \\
+Resultado esperado & Solo se realizan 5 peticiones de red; la sexta se rechaza localmente con 503. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{29}{reintenta una vez solo las lecturas (EP-M-06)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}10.3 ("un reintento solo en operaciones de lectura") \\
+Justificación & Reintentar una verificación podría consumir dos veces un código o duplicar efectos; reintentar una lectura es inocuo. \\
+Escenario & Un servicio falla la primera vez y responde bien la segunda, tanto para \texttt{getFactors} como para \texttt{verify}. \\
+Resultado esperado & La lectura hace 2 peticiones y tiene éxito; la verificación hace 1 y falla con 503. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{30}{mapea 409 de enrolamiento a MFA\_ALREADY\_ENABLED y 410 a ENROLLMENT\_EXPIRED}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & EP-C-21 (409 MFA\_ALREADY\_ENABLED); EP-C-22 (410 ENROLLMENT\_EXPIRED); EP-M-01/02 \\
+Justificación & Los códigos internos del mfa-service deben convertirse en los códigos públicos del contrato del core. \\
+Escenario & El servicio responde 409 al crear y 410 al confirmar. \\
+Resultado esperado & Se obtienen \texttt{MFA\_ALREADY\_ENABLED} y \texttt{ENROLLMENT\_EXPIRED}. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Validación del segundo factor y sesión reciente}
+\noindent\textit{Fichero:} \texttt{test/unit/second-factor.test.ts}\par\medskip
+
+\begin{pruebabox}{31}{tolera espacios intermedios en el código}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & \S{}7.2.5 regla 1 ("se toleran espacios intermedios") \\
+Justificación & Los usuarios copian \texttt{123 456} tal como lo muestra la app. \\
+Escenario & Se normaliza \texttt{123 456}. \\
+Resultado esperado & Se obtiene \texttt{123456}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{32}{exige exactamente uno de code / recoveryCode}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & EP-C-24, EP-C-25, EP-C-06 grant mfa ("excluyente con code") \\
+Justificación & Enviar ambos factores o ninguno es una petición ambigua que debe rechazarse antes de llamar al mfa-service. \\
+Escenario & Se valida sin factor, con ambos, solo con código y solo con código de recuperación. \\
+Resultado esperado & Los dos primeros casos lanzan error; los dos últimos son válidos. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{33}{rechaza formatos inválidos}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RV-04 (6 dígitos); \S{}7.2.6 (formato XXXXX-XXXXX) \\
+Justificación & Validar el formato evita llamadas inútiles al servicio y gastar intentos. \\
+Escenario & Se valida un código de 5 dígitos y un código de recuperación corto. \\
+Resultado esperado & Ambos se rechazan. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{34}{acepta un login de menos de 15 min para aprobar vinculaciones}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}6.4 ("Aprobar exige sesión web reciente"); EP-C-05 \\
+Justificación & La aprobación de un canal es una acción sensible; una sesión recién iniciada es prueba suficiente de presencia. \\
+Escenario & Se evalúa un usuario con \texttt{auth\_time} de hace 60 s. \\
+Resultado esperado & El middleware deja pasar. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{35}{pide REAUTH\_REQUIRED si el login tiene más de 15 min}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & EP-C-05 (401 REAUTH\_REQUIRED) \\
+Justificación & Una sesión antigua podría estar en un equipo compartido; se exige reautenticación. \\
+Escenario & Se evalúa un \texttt{auth\_time} de hace 16 minutos. \\
+Resultado esperado & Se devuelve \texttt{REAUTH\_REQUIRED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{36}{para activar MFA exige reautenticación explícita de menos de 10 min}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & RF-MFA-01 ("tras reautenticarse"); EP-C-21; EP-C-27 (validez de 10 min) \\
+Justificación & Activar el segundo factor emite un secreto; un login reciente no basta, se exige una reautenticación explícita vigente. \\
+Escenario & Se evalúa un usuario solo con login reciente, uno con reautenticación de hace 1 min y otro de hace 11 min. \\
+Resultado esperado & Solo pasa el de reautenticación vigente. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Autenticación de servicios}
+\noindent\textit{Fichero:} \texttt{test/unit/service-auth.test.ts}\par\medskip
+
+\begin{pruebabox}{37}{emite un JWT ES256 de 10 min con iss, sub, aud, scope, jti y kid}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & ADR-20; \S{}5.4; EP-C-01 \\
+Justificación & La credencial de servicio debe ser firmada, rotable, de vida corta y con scopes, verificable por terceros vía JWKS. \\
+Escenario & El cliente \texttt{telegram-bot} solicita un token con su secreto. \\
+Resultado esperado & Token ES256 con \texttt{kid}, \texttt{iss}, \texttt{sub}, \texttt{aud}, \texttt{scope}, \texttt{jti} y 600 s de vida. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{38}{rechaza secreto o cliente incorrectos con 401 SERVICE\_UNAUTHORIZED}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & EP-C-01 (errores); RNF-01 \\
+Justificación & Sin un secreto válido no se debe emitir credencial alguna, y la respuesta no debe distinguir cliente inexistente de secreto erróneo. \\
+Escenario & Se usa un secreto incorrecto y un \texttt{client\_id} inexistente. \\
+Resultado esperado & Ambos producen 401 \texttt{SERVICE\_UNAUTHORIZED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{39}{rechaza scopes no permitidos con 400 INVALID\_SCOPE}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & EP-C-01 ("subconjunto de los permitidos"); ADR-21 (mínimo privilegio) \\
+Justificación & El bot no debe poder obtener el scope \texttt{mfa:manage}, reservado al core. \\
+Escenario & El bot solicita \texttt{scope=mfa:manage}. \\
+Resultado esperado & Error 400 \texttt{INVALID\_SCOPE}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{40}{verifica el scope exigido por la ruta}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & \S{}5.4 (\texttt{requireService(scope)}) \\
+Justificación & Un token válido de un canal no debe servir para otro canal. \\
+Escenario & Se verifica un token del bot exigiendo \texttt{channel:telegram} y \texttt{channel:whatsapp}. \\
+Resultado esperado & El primero se acepta; el segundo se rechaza con 403. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{41}{no acepta como credencial del core un token dirigido al mfa-service}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & ADR-20 (claim \texttt{aud}); confianza cero \\
+Justificación & Un token emitido para otro servicio no debe reutilizarse contra el core (confusión de audiencia). \\
+Escenario & Se firma un token con \texttt{aud=mfa-service} y se verifica como credencial del core. \\
+Resultado esperado & Se rechaza. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{42}{publica la clave pública en el JWKS sin material privado}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & EP-C-02 \\
+Justificación & El JWKS es consultable por otros servicios; nunca debe contener el componente privado de la clave. \\
+Escenario & Se obtiene el JWKS. \\
+Resultado esperado & Una clave EC P-256 con \texttt{kid}, \texttt{alg} y \texttt{use}, sin el campo \texttt{d}. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Vectores RFC 6238 del protocolo XOTP}
+\noindent\textit{Fichero:} \texttt{test/unit/totp-vectors.test.ts}\par\medskip
+
+\begin{pruebabox}{43}{t=\%d $\rightarrow$ \%s (8 díg.) / \%s (6 díg.) — prueba parametrizada, 4 ejecuciones}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & Escalado \S{}7.2.3 (vectores de prueba obligatorios); AR-23 \\
+Justificación & El documento exige que la app y el mfa-service superen los vectores RFC 6238 con SHA-256. El core no implementa TOTP, pero la simulación del mfa-service usada en integración y E2E sí lo hace; validarla con los vectores oficiales garantiza que las pruebas del core son fieles al protocolo. \\
+Escenario & Se calcula el código para t = 59, 1111111109, 1234567890 y 2000000000 con la clave de 32 bytes. \\
+Resultado esperado & Se obtienen 46119246/119246, 68084774/084774, 91819424/819424 y 90698825/698825. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{44}{el secreto de 32 bytes ocupa 52 caracteres Base32 sin relleno y es reversible}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Unitaria \\
+Requisito & \S{}7.2.2 (campo \texttt{sec}: "Base32 sin relleno, 52 caracteres") \\
+Justificación & La introducción manual del secreto depende de esta codificación exacta. \\
+Escenario & Se codifica y decodifica la clave de prueba. \\
+Resultado esperado & Longitud 52 y decodificación idéntica al original. \\
+\end{tabularx}
+\end{pruebabox}
+\section{Pruebas de integración}
+Ejercen la aplicación Express completa con Supertest contra PostgreSQL 15 y Redis 7 reales, levantados con \texttt{docker-compose.test.yml}. El SMTP se sustituye por un buzón en memoria y el mfa-service por una simulación que implementa el contrato EP-M y supera los vectores RFC 6238. Antes de cada caso se vacían todas las tablas y Redis. Se ejecutan en serie con \texttt{npm run test:integration}.
+\subsection{Regresión de autenticación y cuenta (requisitos originales)}
+\noindent\textit{Fichero:} \texttt{test/integration/auth-legacy.test.ts}\par\medskip
+
+\begin{pruebabox}{45}{CA-01: un correo @gmail.com devuelve 400 y no crea registro pendiente}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-01; RF-AUT-02; RA-02 \\
+Justificación & El acceso está limitado a la comunidad de la UC. Un dominio ajeno debe rechazarse antes de crear ningún estado. \\
+Escenario & Se registra un visitante con \texttt{x@gmail.\allowbreak{}com}. \\
+Resultado esperado & 400 \texttt{INVALID\_EMAIL\_DOMAIN} y cero registros pendientes en la base de datos. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{46}{RF-AUT-02/03: email duplicado $\rightarrow$ 409; contraseña débil $\rightarrow$ 400}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-AUT-02; RF-AUT-03; RV-03 \\
+Justificación & La unicidad del email y la complejidad de la contraseña se validan en servidor antes del hash. \\
+Escenario & Se registra un email ya existente y, por separado, una contraseña sin mayúsculas ni símbolos. \\
+Resultado esperado & 409 y 400 respectivamente. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{47}{CA-02: OTP correcto antes de 30 min crea la cuenta (rol Estudiante) e inicia sesión}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-02; RF-AUT-04 a RF-AUT-08 \\
+Justificación & El alta se hace en dos fases: primero un registro pendiente con el OTP guardado como hash; tras verificar, se crea el usuario Estudiante, se borra el pendiente y se inicia sesión. \\
+Escenario & Se registra un email nuevo, se lee el OTP del buzón y se verifica. \\
+Resultado esperado & 201; usuario con rol \texttt{ESTUDIANTE}; el hash guardado no es el código; sin pendientes; \texttt{/\allowbreak{}auth/\allowbreak{}me} responde con \texttt{mfaEnabled: false}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{48}{CA-03: OTP tras 30 min $\rightarrow$ 410 y hay que repetir el registro}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-03; RF-AUT-05; RV-04 \\
+Justificación & El OTP de alta caduca a los 30 minutos. \\
+Escenario & Se fuerza la caducidad del registro pendiente y se envía el OTP correcto. \\
+Resultado esperado & 410 y no se crea el usuario. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{49}{el OTP de alta admite como máximo 5 intentos}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RNF-03; DV-08 \\
+Justificación & Un OTP de 6 dígitos sin límite de intentos es vulnerable a fuerza bruta. \\
+Escenario & Se envían 5 códigos erróneos y después el correcto. \\
+Resultado esperado & Los 5 primeros dan 400; el correcto da 410 porque el registro se ha invalidado. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{50}{RF-AUT-09: misma respuesta genérica si el email no existe o la contraseña es errónea}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-AUT-09 \\
+Justificación & Respuestas distintas permitirían enumerar cuentas registradas. \\
+Escenario & Se intenta entrar con un email inexistente y con una contraseña errónea. \\
+Resultado esperado & Ambos 401 con idénticos \texttt{error} y \texttt{code}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{51}{una cuenta sin contraseña (creada por canal) recibe el mismo 401 genérico}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & ADR-29; \S{}5.9 ("comparación bcrypt contra hash ficticio y 401 genérico") \\
+Justificación & Las cuentas creadas desde Telegram no tienen contraseña; el login web no debe revelarlo. \\
+Escenario & Se intenta entrar con una cuenta de \texttt{passwordHash} nulo. \\
+Resultado esperado & 401 \texttt{INVALID\_CREDENTIALS}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{52}{RF-AUT-10: cuenta bloqueada con credenciales correctas $\rightarrow$ 403 con motivo y fecha}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-AUT-10; RUI-03 \\
+Justificación & Solo tras validar las credenciales se informa del bloqueo, con motivo y fecha de fin. \\
+Escenario & Se bloquea temporalmente a un usuario y este inicia sesión. \\
+Resultado esperado & 403 \texttt{ACCOUNT\_BLOCKED} con \texttt{detail} que incluye \texttt{permanent: false}, motivo y fecha. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{53}{RF-AUT-11/12: cookies HttpOnly; refresh solo en su ruta y almacenado con hash}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-AUT-11; RF-AUT-12; RNF-02 \\
+Justificación & Los tokens no deben ser accesibles desde JavaScript y el refresh token solo debe viajar al endpoint de renovación y guardarse como hash. \\
+Escenario & Se inicia sesión y se inspeccionan las cookies y la base de datos. \\
+Resultado esperado & \texttt{access\_token} HttpOnly; \texttt{refresh\_token} con \texttt{Path=/\allowbreak{}api/\allowbreak{}auth/\allowbreak{}refresh}; hash bcrypt en la base de datos. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{54}{renueva el access token; tras logout el refresh deja de servir}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-AUT-12; RF-AUT-13 \\
+Justificación & El cierre de sesión debe invalidar el refresh token. \\
+Escenario & Se refresca, se cierra sesión y se consulta el usuario. \\
+Resultado esperado & Refresh 200, logout 200 y \texttt{refreshTokenHash} nulo. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{55}{el refresco de un usuario bloqueado se deniega y revoca}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-AUT-12 ("denegarse y revocarse si el usuario está bloqueado") \\
+Justificación & Un bloqueo no debe poder esquivarse renovando el token. \\
+Escenario & Se bloquea a un usuario con sesión y este intenta refrescar. \\
+Resultado esperado & 403 y hash de refresco anulado. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{56}{RF-AUT-17: registra LoginHistory con IP y agente}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-AUT-17; AR-02 (IP mediante trust proxy) \\
+Justificación & Cada login correcto debe dejar historial con IP, ubicación y agente. \\
+Escenario & Se inicia sesión con \texttt{User-Agent: jest}. \\
+Resultado esperado & Existe una fila de \texttt{LoginHistory} con ese agente. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{57}{RNF-03: el login se limita por cuenta (429 con retryAfter)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RNF-03; DV-08; F0 (limitador en Redis) \\
+Justificación & El login debe limitar intentos por IP y por cuenta para mitigar la fuerza bruta. \\
+Escenario & Se hacen 11 intentos fallidos contra la misma cuenta. \\
+Resultado esperado & El último devuelve 429 \texttt{RATE\_LIMITED} con \texttt{retryAfter} positivo. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{58}{RF-AUT-14: responde igual exista o no el email}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-AUT-14 \\
+Justificación & La recuperación no debe revelar si una cuenta existe. \\
+Escenario & Se solicita recuperación para un email existente y otro inexistente. \\
+Resultado esperado & Respuestas idénticas; solo se envía un correo. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{59}{RF-AUT-15: el restablecimiento revoca sesiones y registra PASSWORD\_RESET; sirve para fijar contraseña (ADR-29)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-AUT-15; ADR-29 \\
+Justificación & El restablecimiento valida OTP y complejidad, revoca sesiones y queda auditado. Además es la vía para que una cuenta creada desde Telegram fije contraseña. \\
+Escenario & Una cuenta sin contraseña solicita recuperación y fija una nueva. \\
+Resultado esperado & Login web posterior correcto y una entrada \texttt{PASSWORD\_RESET} en el log. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{60}{RF-AUT-16: cambiar contraseña exige la actual}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-AUT-16 \\
+Justificación & Con sesión iniciada no basta para cambiar la contraseña: hace falta la actual. \\
+Escenario & Se cambia con una contraseña actual errónea y luego con la correcta. \\
+Resultado esperado & 401 y 204 respectivamente. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{61}{RF-PER-01: el email no es modificable desde Ajustes}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-PER-01 \\
+Justificación & El nombre, la carrera y el curso son editables; el email no. \\
+Escenario & Se intenta enviar \texttt{email} en \texttt{PATCH /\allowbreak{}auth/\allowbreak{}me} y después solo \texttt{name}. \\
+Resultado esperado & 400 en el primer caso; 200 con el nombre nuevo y el email intacto en el segundo. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{62}{/api es alias de /api/v1}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & Escalado \S{}5.6 (versionado) \\
+Justificación & Los microservicios usan \texttt{/\allowbreak{}api/\allowbreak{}v1} y el frontend actual \texttt{/\allowbreak{}api}; ambos deben servir el mismo contrato. \\
+Escenario & Se consulta \texttt{/\allowbreak{}auth/\allowbreak{}me} por ambos prefijos. \\
+Resultado esperado & Mismas respuestas. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{63}{RF-ACA-08: el catálogo de registro es público}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-ACA-08; EP-R-01; EP-R-02 \\
+Justificación & El formulario de registro necesita carreras y cursos sin sesión. \\
+Escenario & Se consultan carreras y cursos sin cookies. \\
+Resultado esperado & 200 y la carrera sembrada aparece en el listado. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{64}{GET /health devuelve estado y marca de tiempo (RNF-10, EP-C-30)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RNF-10; EP-C-30 \\
+Justificación & El endpoint de salud debe devolver estado y hora, y desde la red interna, el estado de las dependencias. \\
+Escenario & Se consulta \texttt{/\allowbreak{}health} y \texttt{/\allowbreak{}api/\allowbreak{}v1/\allowbreak{}health?deep=true} desde loopback. \\
+Resultado esperado & \texttt{status: ok}, marca de tiempo válida y \texttt{dependencies: \{db, redis, mfa\}} en \texttt{up}. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Ofertas, paginación y mensajería}
+\noindent\textit{Fichero:} \texttt{test/integration/offers.test.ts}\par\medskip
+
+\begin{pruebabox}{65}{CA-04: B (tiene 2, desea 1) encuentra la oferta de A (tiene 1, desea 2)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-04; RF-OFE-04 \\
+Justificación & La búsqueda complementaria es el núcleo funcional: el grupo actual de la oferta debe ser el deseado del buscador y viceversa. \\
+Escenario & A publica (P1 $\rightarrow$ P2). B busca teniendo P2 y deseando P1, y luego una combinación sin coincidencias. \\
+Resultado esperado & B obtiene exactamente la oferta de A; la segunda búsqueda devuelve una lista vacía. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{66}{RF-OFE-02: grupos iguales o de otra asignatura $\rightarrow$ 400}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-OFE-02 \\
+Justificación & Los grupos deben pertenecer a la asignatura, no estar eliminados y ser distintos. \\
+Escenario & Se crea una oferta con dos grupos iguales y otra con un grupo de otra asignatura. \\
+Resultado esperado & 400 en ambos casos. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{67}{RF-PER-03: sin expediente no se puede crear ni aceptar (409 EXPEDIENTE\_REQUIRED)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-PER-03; EP-R-10 (409 EXPEDIENTE\_REQUIRED) \\
+Justificación & El usuario debe elegir al menos una asignatura antes de operar con ofertas. El código heredado no lo comprobaba. \\
+Escenario & Un usuario sin expediente publica una oferta. \\
+Resultado esperado & 409 \texttt{EXPEDIENTE\_REQUIRED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{68}{RF-OFE-07: crear una oferta notifica al creador}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-OFE-07; RE-01 \\
+Justificación & Al publicar, el creador recibe una notificación. El código heredado no la generaba. \\
+Escenario & Se publica una oferta. \\
+Resultado esperado & Existe una notificación de "publicada" para el creador. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{69}{RF-OFE-08: no se puede aceptar la propia oferta (400 OWN\_OFFER)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-OFE-08 \\
+Justificación & Solo un usuario distinto del creador puede aceptar. \\
+Escenario & El creador acepta su propia oferta. \\
+Resultado esperado & 400 \texttt{OWN\_OFFER}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{70}{CA-05: dos aceptaciones concurrentes $\rightarrow$ solo una gana; la otra recibe 409}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-05; RF-OFE-08; DV-03; AR-06 \\
+Justificación & La aceptación debe ser atómica. El código heredado leía y luego escribía sin condición, permitiendo la doble aceptación. Ahora es una actualización condicional sobre \texttt{status = OPEN}. \\
+Escenario & Dos usuarios aceptan la misma oferta en paralelo. \\
+Resultado esperado & Estados \texttt{[200, 409]}; el perdedor recibe \texttt{OFFER\_NOT\_OPEN}; la oferta queda ACCEPTED con uno de los dos como aceptante. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{71}{RF-OFE-09: al aceptar se notifica a ambas partes con nombre y email de la contraparte}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-OFE-09; RE-02 \\
+Justificación & Cada parte debe recibir los datos de contacto de la otra para coordinar el intercambio. \\
+Escenario & B acepta la oferta de A. \\
+Resultado esperado & La notificación de A contiene nombre y email de B y viceversa. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{72}{RF-OFE-10: creador, aceptante o admin cierran; cerrada no se reabre (409); terceros 403}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-OFE-10; RE-03 \\
+Justificación & Solo las partes o un administrador pueden cerrar, y una oferta cerrada es un estado final. \\
+Escenario & Un tercero intenta cerrar; el creador cierra dos veces; otro usuario intenta aceptarla. \\
+Resultado esperado & 403; 200 y luego 409 \texttt{OFFER\_ALREADY\_CLOSED}; 409 al aceptar. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{73}{RF-OFE-11: el panel lista ofertas propias y aceptadas, de más reciente a más antigua}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-OFE-11 \\
+Justificación & El panel debe mostrar tanto las ofertas creadas como las aceptadas, ordenadas. \\
+Escenario & A publica una oferta y después acepta una de B. \\
+Resultado esperado & El panel de A lista la aceptada (más reciente) antes que la propia. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{74}{con limit devuelve \{items, nextCursor\}, excluye las propias y no repite elementos}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-12; escalado \S{}5.6 \\
+Justificación & Para el bot, la búsqueda es paginada, excluye las ofertas del propio buscador y no expone el email del creador. \\
+Escenario & Se crean 5 ofertas ajenas y una propia; se pagina con \texttt{limit=3}. \\
+Resultado esperado & Páginas de 3 y 2 elementos, \texttt{nextCursor} nulo al final, sin la propia, sin duplicados y sin email del creador. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{75}{cursor manipulado $\rightarrow$ 400}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & Escalado \S{}5.6; RNF-01 \\
+Justificación & Un cursor inválido es entrada errónea del cliente. \\
+Escenario & Se envía \texttt{cursor=basura}. \\
+Resultado esperado & 400. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{76}{/offers/me admite status, role y contraparte solo si ACCEPTED}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-13 \\
+Justificación & El panel del bot filtra por estado y rol y solo muestra la contraparte cuando la oferta está aceptada. \\
+Escenario & A tiene una oferta aceptada por Beto y otra abierta; se filtra por estado y rol, y por un estado inexistente. \\
+Resultado esperado & La aceptada incluye \texttt{counterpart: \{name: Beto\}} e \texttt{isCreator: true}; la abierta, \texttt{counterpart: null}; el estado inválido da 400. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{77}{EP-C-14: grupos de una asignatura sin pasar por /admin, ordenados}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-14; RF-ACA-07 \\
+Justificación & Los grupos solo se listaban en \texttt{/\allowbreak{}admin}; el bot y el autocompletado necesitan una lectura no administrativa que respete el borrado lógico de los ancestros. \\
+Escenario & Se consultan los grupos y, tras eliminar lógicamente el curso, se vuelve a consultar. \\
+Resultado esperado & Primero, P1, P2 y P3 ordenados; después, 404. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{78}{CA-06: un mensaje queda guardado, ambos reciben notificación y se publica offer.message.created}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-06; RF-CHT-03, RF-CHT-04, RF-CHT-06; \S{}11 \\
+Justificación & El mensaje se persiste antes de difundirse, se recorta, notifica a ambas partes y llega al bus para el bot. \\
+Escenario & Con una oferta aceptada, A envía un mensaje con espacios laterales. \\
+Resultado esperado & Contenido recortado; una notificación por parte; evento con la audiencia de ambos usuarios. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{79}{RF-CHT-01/03: solo las partes; mensajes vacíos o >2000 se rechazan}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-CHT-01; RF-CHT-03; RV-06 \\
+Justificación & El chat es exclusivo de creador y aceptante y los mensajes tienen entre 1 y 2000 caracteres. \\
+Escenario & Se envía un mensaje vacío, uno de 2001 caracteres y uno desde un tercero. \\
+Resultado esperado & 400, 400 y 403. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{80}{RF-CHT-08: un chat cerrado no acepta mensajes (409 CHAT\_CLOSED) pero se lee}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-CHT-08; RF-CHT-04 \\
+Justificación & El chat cerrado pasa a solo lectura: no admite mensajes pero el historial sigue disponible. \\
+Escenario & Se envía un mensaje, se cierra la oferta y se intenta enviar otro. \\
+Resultado esperado & 409 \texttt{CHAT\_CLOSED}; el detalle muestra solo el primer mensaje. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Administración, bloqueo, estructura académica y auditoría}
+\noindent\textit{Fichero:} \texttt{test/integration/admin.test.ts}\par\medskip
+
+\begin{pruebabox}{81}{CA-07: un embajador de la carrera X no puede bloquear a un estudiante de Y (403, sin cambios)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-07; RF-BLQ-01; RF-ADM-08; AR-05 \\
+Justificación & La autoridad se delega por ámbito. El bloqueo heredado no comprobaba el ámbito del usuario objetivo. \\
+Escenario & Un embajador de una carrera bloquea a un estudiante de otra. \\
+Resultado esperado & 403 y el rol del estudiante no cambia. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{82}{CA-08: el bloqueo pasa sus ofertas a INACTIVE, invalida la sesión y publica account.blocked}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-08; RF-BLQ-03; RF-BLQ-04; RE-04; \S{}11 \\
+Justificación & El bloqueo debe revocar la capacidad de actuar en el acto, ocultar sus ofertas, emitir el evento y quedar auditado. \\
+Escenario & Un estudiante con una oferta abierta es bloqueado; acto seguido usa su access token aún vigente. \\
+Resultado esperado & Oferta INACTIVE; la petición devuelve 403 \texttt{ACCOUNT\_BLOCKED}; evento \texttt{account.\allowbreak{}blocked}; log \texttt{BLOCK\_USER}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{83}{CA-09: al vencer un bloqueo temporal la cuenta puede entrar sin intervención (DV-01)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-09; RF-BLQ-05; DV-01 \\
+Justificación & Al llegar la fecha de fin, la cuenta debe recuperarse sola. El código heredado no lo hacía. \\
+Escenario & Se fija un bloqueo con fin en el pasado y el usuario inicia sesión. \\
+Resultado esperado & 200 y rol \texttt{ESTUDIANTE}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{84}{DV-02 / RF-BLQ-02: nadie se bloquea a sí mismo ni bloquea a un Propietario; un embajador solo a estudiantes}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-BLQ-02; DV-02 \\
+Justificación & La desviación DV-02 permitía al Propietario bloquear a cualquiera, incluido él mismo. \\
+Escenario & Un Propietario se bloquea a sí mismo y a otro Propietario; un embajador bloquea a otro embajador. \\
+Resultado esperado & 403 en los tres casos. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{85}{RF-BLQ-06: desbloquear devuelve el rol Estudiante; si no estaba bloqueado $\rightarrow$ 409}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-BLQ-06; RE-09 \\
+Justificación & El desbloqueo solo procede sobre usuarios bloqueados y restaura el rol. \\
+Escenario & Se desbloquea a un usuario activo, se le bloquea temporalmente y se le desbloquea. \\
+Resultado esperado & 409; 200; 200 y rol \texttt{ESTUDIANTE}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{86}{CA-10: eliminar una asignatura con ofertas cancela las ofertas y notifica a los afectados (RF-ACA-06)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-10; RF-ACA-06; RF-ACA-07; RE-05 \\
+Justificación & Tras confirmar la eliminación, las ofertas vinculadas se cancelan y los usuarios afectados son notificados. El código heredado notificaba pero no cancelaba. \\
+Escenario & Con una oferta abierta, la Propietaria elimina la asignatura. \\
+Resultado esperado & Oferta CLOSED; notificación "Aviso del sistema"; eventos \texttt{offer.\allowbreak{}status.\allowbreak{}changed} y \texttt{academic.\allowbreak{}changed}; la asignatura desaparece del catálogo. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{87}{AR-05: un embajador con ámbito de un curso puede gestionar grupos de ese curso y no de otro}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & AR-05; RF-ADM-02; RF-ACA-09 \\
+Justificación & Un ámbito con curso concreto cubre solo ese curso. Los middleware heredados excluían por error a los embajadores de curso, y el borrado de cursos no comprobaba el ámbito. \\
+Escenario & Un embajador del curso 2.º consulta grupos de su curso y de otro, y elimina otro curso. \\
+Resultado esperado & 200, 403 y 403. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{88}{RF-ACA-01: unicidad de código de asignatura $\rightarrow$ 409}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-ACA-01 \\
+Justificación & El código de asignatura es único en todo el sistema. \\
+Escenario & Se crea una asignatura con un código existente. \\
+Resultado esperado & 409. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{89}{CA-11: un ticket CLOSED no admite mensajes (409)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-11; RF-TIC-02 \\
+Justificación & Un ticket cerrado no admite mensajes. \\
+Escenario & Se abre, se cierra y se intenta responder un ticket. \\
+Resultado esperado & 409. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{90}{CA-12: un embajador de ámbito A solo ve en el log acciones de usuarios de A}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-12; RF-LOG-04 \\
+Justificación & La auditoría está limitada al ámbito del solicitante. \\
+Escenario & Hay entradas de log de usuarios de dos carreras; consulta un embajador de una de ellas. \\
+Resultado esperado & Ve las de su carrera y no las de la otra. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{91}{RF-LOG-06: el log no guarda contraseñas, OTP ni tokens}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-LOG-06; RNF-09 \\
+Justificación & El log no debe contener secretos. \\
+Escenario & Se realiza un restablecimiento de contraseña completo y se serializa todo el log. \\
+Resultado esperado & No aparecen ni la nueva contraseña ni el OTP. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{92}{RF-TGB-11 / matriz de roles: un estudiante no accede a /admin}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & Tabla 6 (matriz de roles); RF-ADM-01 \\
+Justificación & Las acciones administrativas están vetadas al rol Estudiante. \\
+Escenario & Un estudiante consulta \texttt{/\allowbreak{}admin/\allowbreak{}logs}. \\
+Resultado esperado & 403. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Canal Telegram: servicio, vinculación, sesiones e idempotencia}
+\noindent\textit{Fichero:} \texttt{test/integration/channel.test.ts}\par\medskip
+
+\begin{pruebabox}{93}{canjea client credentials por un JWT de servicio y publica el JWKS interno}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-01; EP-C-02; ADR-20 \\
+Justificación & Es la puerta de entrada de cualquier microservicio: credencial de servicio de vida corta sin caché y JWKS público para su verificación. \\
+Escenario & El bot solicita token; se consulta el JWKS por HTTP. \\
+Resultado esperado & 200 con \texttt{expires\_in: 600}, \texttt{Cache-Control: no-store} y una clave EC ES256. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{94}{rechaza credenciales incorrectas (401 SERVICE\_UNAUTHORIZED) y scopes ajenos (400 INVALID\_SCOPE)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-01 (errores) \\
+Justificación & Verificación HTTP de los errores del contrato. \\
+Escenario & Secreto erróneo y scope \texttt{mfa:manage}. \\
+Resultado esperado & 401 \texttt{SERVICE\_UNAUTHORIZED} y \texttt{INVALID\_SCOPE}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{95}{los endpoints S exigen credencial de servicio}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}5.4 (\texttt{requireService}) \\
+Justificación & Los endpoints de acceso S no deben atenderse sin credencial de servicio. \\
+Escenario & Se crea una solicitud de vinculación sin cabecera de servicio. \\
+Resultado esperado & 401 \texttt{SERVICE\_UNAUTHORIZED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{96}{flujo completo: código $\rightarrow$ aprobación web $\rightarrow$ canje $\rightarrow$ /misofertas funciona}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-18; RF-TGB-01; ADR-19; EP-C-03 a EP-C-06; AR-16 \\
+Justificación & El usuario vincula su cuenta sin introducir la contraseña en Telegram, aprobando desde la web un código mostrado por el bot. \\
+Escenario & El bot crea la solicitud, sondea antes de la aprobación (dos veces seguidas), el usuario consulta y aprueba en la web, el bot canjea dos veces el \texttt{deviceCode} y consulta sus ofertas. \\
+Resultado esperado & Formato correcto del código; \texttt{AUTHORIZATION\_PENDING} y luego \texttt{SLOW\_DOWN}; datos de reconocimiento visibles; sesión emitida con el perfil del usuario; segundo canje \texttt{INVALID\_GRANT}; \texttt{/\allowbreak{}offers/\allowbreak{}me} paginado; evento \texttt{channel.\allowbreak{}link.\allowbreak{}approved}, log \texttt{CHANNEL\_LINKED} y notificación de seguridad. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{97}{rechazar la vinculación $\rightarrow$ ACCESS\_DENIED al canjear}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-05 (decision=deny); EP-C-06 (403 ACCESS\_DENIED) \\
+Justificación & El usuario debe poder rechazar una solicitud que no reconoce. \\
+Escenario & El usuario rechaza y el bot canjea. \\
+Resultado esperado & Respuesta \texttt{DENIED} y 403 \texttt{ACCESS\_DENIED} al canjear. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{98}{aprobar exige sesión web reciente (login de más de 15 min $\rightarrow$ 401 REAUTH\_REQUIRED)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}6.4 ("Aprobar exige sesión web reciente"); EP-C-05 \\
+Justificación & Mitiga que alguien apruebe un código ajeno desde una sesión olvidada. \\
+Escenario & Se aprueba con un access token cuyo \texttt{auth\_time} tiene 20 minutos. \\
+Resultado esperado & 401 \texttt{REAUTH\_REQUIRED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{99}{una identidad de Telegram vinculada a otra cuenta $\rightarrow$ 409 CHANNEL\_IDENTITY\_TAKEN}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}5.9 (unicidad de ChannelIdentity); EP-C-05 \\
+Justificación & Una identidad de Telegram solo puede estar activa en una cuenta. \\
+Escenario & La identidad 999 ya pertenece a A; B aprueba una solicitud de esa identidad. \\
+Resultado esperado & 409 \texttt{CHANNEL\_IDENTITY\_TAKEN}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{100}{una solicitud caducada $\rightarrow$ 410 LINK\_EXPIRED}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}5.9 (caducidad de 10 min); EP-C-04 \\
+Justificación & Los códigos caducan a los 10 minutos. \\
+Escenario & Se fuerza la caducidad y se consulta el código. \\
+Resultado esperado & 410 \texttt{LINK\_EXPIRED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{101}{límite de 5 solicitudes por externalUserId y hora}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-03 ("Límite: 5 por externalUserId y hora") \\
+Justificación & Evita que se generen códigos masivamente para una misma identidad. \\
+Escenario & Se crean 6 solicitudes para la misma identidad. \\
+Resultado esperado & 5 respuestas 201 y una 429. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{102}{CA-21: el token de canal sin credencial de servicio $\rightarrow$ 401; en /admin $\rightarrow$ 403 CHANNEL\_FORBIDDEN\_ROUTE}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-21; RF-TGB-11; ADR-21; \S{}5.5 \\
+Justificación & Un token de canal robado no sirve sin la credencial del servicio, y el canal solo accede a la lista blanca de rutas; ninguna ruta administrativa admite canal, aunque el usuario sea Propietario. \\
+Escenario & Una Propietaria vinculada usa su token sin cabecera de servicio y luego accede a \texttt{/\allowbreak{}admin/\allowbreak{}logs}, \texttt{/\allowbreak{}tickets/\allowbreak{}me} y al cambio de contraseña. \\
+Resultado esperado & 401; y 403 \texttt{CHANNEL\_FORBIDDEN\_ROUTE} en las tres rutas. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{103}{la credencial de servicio sola no basta (sin Bearer de canal $\rightarrow$ 401)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}5.2 (ServiceChannelExtractor) \\
+Justificación & El servicio no actúa nunca por cuenta propia sobre datos de usuario: necesita la sesión del usuario. \\
+Escenario & Se consulta \texttt{/\allowbreak{}offers/\allowbreak{}me} solo con la cabecera de servicio. \\
+Resultado esperado & 401. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{104}{cookie y cabecera de servicio a la vez $\rightarrow$ 400 AMBIGUOUS\_CREDENTIALS}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}5.2 (CSRF; "se rechaza con 400 AMBIGUOUS\_CREDENTIALS") \\
+Justificación & Mezclar credenciales podría permitir confusión de identidad. \\
+Escenario & Se envía una petición del bot con una cookie añadida. \\
+Resultado esperado & 400 \texttt{AMBIGUOUS\_CREDENTIALS}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{105}{el bot reutiliza expediente, catálogo, búsqueda, oferta y aceptación (RF-TGB-04..06)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-TGB-04 a RF-TGB-06; ADR-17; EP-R-05 a EP-R-13 \\
+Justificación & El bot es un cliente más de la API pública: los endpoints existentes sirven sin duplicarlos. \\
+Escenario & Un usuario vinculado sin expediente añade una asignatura (dos veces), lista grupos, busca, acepta, escribe y cierra. \\
+Resultado esperado & Expediente 201 y luego 200; tres grupos; búsqueda paginada con la oferta esperada; aceptación, mensaje y cierre correctos; \texttt{/\allowbreak{}auth/\allowbreak{}me} con \texttt{mfaEnabled}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{106}{Telegram reintenta el mismo update: una sola oferta y la misma respuesta}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-19; EP-C-29; \S{}5.6 \\
+Justificación & Telegram reintenta updates; sin idempotencia se duplicarían ofertas. \\
+Escenario & Se envía dos veces la misma creación con \texttt{Idempotency-Key: tg:777}. \\
+Resultado esperado & Ambas 201 con el mismo id, cabecera \texttt{Idempotent-Replayed} y una sola oferta en la base de datos. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{107}{misma clave con otro cuerpo $\rightarrow$ 422 IDEMPOTENCY\_CONFLICT; sin clave desde canal $\rightarrow$ 400}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}5.6; \S{}9.1 (cabecera I obligatoria en POST de creación) \\
+Justificación & Reusar una clave con otro cuerpo es un error del cliente; para el canal la cabecera es obligatoria. \\
+Escenario & Se reutiliza la clave con otro grupo y se omite la clave. \\
+Resultado esperado & 422 \texttt{IDEMPOTENCY\_CONFLICT} y 400 \texttt{IDEMPOTENCY\_KEY\_REQUIRED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{108}{en la web la cabecera es opcional (contrato actual intacto)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RNF-11 (no romper contratos existentes) \\
+Justificación & El frontend actual no envía la cabecera y debe seguir funcionando. \\
+Escenario & Se crea una oferta por la web sin cabecera. \\
+Resultado esperado & 201. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{109}{rota el refresh token; reutilizar el anterior revoca toda la familia}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & ADR-18; EP-C-06 ("refresh reutilizado: se revoca toda la familia") \\
+Justificación & La rotación con detección de reutilización limita el daño de un refresh token robado. \\
+Escenario & Se refresca, se reutiliza el token antiguo y después se usa el nuevo. \\
+Resultado esperado & Nuevo token distinto; reutilización \texttt{INVALID\_GRANT}; el nuevo también invalidado; access token revocado; evento con motivo \texttt{REUSE\_DETECTED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{110}{un refresh de otra identidad externa $\rightarrow$ INVALID\_GRANT}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-06 ("Debe coincidir con el usado... si no, invalid\_grant") \\
+Justificación & Un token solo es válido para la identidad que lo obtuvo. \\
+Escenario & Se refresca indicando otro \texttt{externalUserId}. \\
+Resultado esperado & \texttt{INVALID\_GRANT}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{111}{caducidad absoluta superada $\rightarrow$ 410 EXPIRED\_TOKEN}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}6.7 (caducidad absoluta de 180 días); EP-C-06 \\
+Justificación & Ninguna sesión de canal vive indefinidamente. \\
+Escenario & Se fuerza la caducidad absoluta y se refresca. \\
+Resultado esperado & 410. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{112}{RF-TGB-09: /desvincular revoca la identidad (EP-C-09 scope=identity)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-TGB-09; EP-C-09 \\
+Justificación & El usuario debe poder desvincular desde el propio bot. \\
+Escenario & El bot revoca con \texttt{scope=identity} y vuelve a usar el token. \\
+Resultado esperado & 204; 401; ninguna identidad activa. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{113}{RF-TGB-09: también desde Ajustes web (EP-C-10 / EP-C-11)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-TGB-09; EP-C-10; EP-C-11 \\
+Justificación & La desvinculación también debe ser posible desde la web, revocando las sesiones del canal. \\
+Escenario & El usuario lista sus canales, elimina la identidad y repite la eliminación. \\
+Resultado esperado & Un canal listado; 204; el bot recibe 401; segundo borrado 404. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{114}{CA-20: el bloqueo revoca la sesión de canal, el bot recibe el evento y toda acción falla}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-20; RF-TGB-10 \\
+Justificación & El bloqueo debe extenderse a las sesiones de canal y avisar al bot. \\
+Escenario & Un embajador bloquea a un usuario vinculado; el bot consulta y refresca. \\
+Resultado esperado & 401; \texttt{INVALID\_GRANT}; eventos \texttt{account.\allowbreak{}blocked} y \texttt{channel.\allowbreak{}session.\allowbreak{}revoked} con motivo \texttt{BLOCKED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{115}{EP-C-07 responde igual exista o no la cuenta (anti-enumeración)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-07; RF-AUT-14 (por analogía) \\
+Justificación & Pedir un OTP de login por chat no debe revelar qué correos están registrados. \\
+Escenario & Se pide OTP para un email existente (en mayúsculas) y otro inexistente; se canjea el segundo. \\
+Resultado esperado & Ambos 202 con la misma forma; un solo correo enviado; el canje del inexistente da \texttt{INVALID\_GRANT}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{116}{EP-C-07 exige dominio institucional (400 INVALID\_EMAIL\_DOMAIN)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-07; RV-02 \\
+Justificación & El canal mantiene la restricción institucional. \\
+Escenario & Se pide OTP para \texttt{x@gmail.\allowbreak{}com}. \\
+Resultado esperado & \texttt{INVALID\_EMAIL\_DOMAIN}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{117}{login por OTP de correo sin MFA emite la sesión y crea la identidad}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-TGB-02; \S{}6.5 \\
+Justificación & Alternativa a la vinculación para usuarios sin navegador a mano. \\
+Escenario & Se pide OTP y se canjea con \texttt{grant\_type=email\_otp}. \\
+Resultado esperado & Sesión emitida e identidad activa creada. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{118}{CA-22: con MFA, el OTP de correo solo da un reto; la sesión requiere el código XOTP}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-22; RF-MFA-04; RF-TGB-02; \S{}7.2.8 ("Saltarse el MFA por el bot") \\
+Justificación & El canal no puede ser un atajo para eludir el segundo factor. \\
+Escenario & Un usuario con MFA canjea el OTP de correo, envía un código XOTP erróneo, luego uno correcto, y reutiliza el reto. \\
+Resultado esperado & \texttt{mfaRequired} sin tokens ni sesiones; 401 \texttt{MFA\_INVALID\_CODE} con intentos restantes; sesión con \texttt{mfaEnabled: true}; reutilización \texttt{INVALID\_GRANT}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{119}{RF-TGB-03 / ADR-29: el alta desde el bot crea la cuenta sin contraseña, con identidad y sesión}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-TGB-03; ADR-29; EP-C-08 \\
+Justificación & La contraseña nunca debe pasar por Telegram. \\
+Escenario & El bot registra un usuario, se canjea el OTP y se intenta un login web con contraseña. \\
+Resultado esperado & 202; sesión con \texttt{hasExpediente: false}; \texttt{passwordHash} nulo; login web 401. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{120}{EP-C-08 valida acceptTerms, dominio y que la identidad no esté vinculada}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-08; RA-12 (aviso de no oficialidad) \\
+Justificación & El alta exige aceptar el aviso de no oficialidad y el tratamiento de datos, y respeta las unicidades. \\
+Escenario & Se registra sin aceptar términos, con una identidad ya vinculada y con un email existente. \\
+Resultado esperado & 400; \texttt{CHANNEL\_IDENTITY\_TAKEN}; \texttt{EMAIL\_TAKEN}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{121}{el correo no se puede desactivar; Telegram solo si está vinculado}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-17; EP-C-18; RF-NOT-01 \\
+Justificación & El correo es obligatorio; Telegram es un canal adicional que solo se configura si está vinculado. \\
+Escenario & Se leen las preferencias, se intenta desactivar el correo, activar Telegram sin vincular y, tras vincular, silenciar los mensajes de chat. \\
+Resultado esperado & Valores por defecto esperados; 400; 409; preferencias actualizadas. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{122}{las notificaciones del bot: no leídas, contador y marcar leída (EP-R-14..16)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-R-14 a EP-R-16; RF-NOT-04 \\
+Justificación & El bot reutiliza los endpoints de notificaciones con los parámetros compatibles nuevos. \\
+Escenario & Se consulta el contador, se lista con \texttt{unread=true\&limit=1} y se marca como leída una propia y una inexistente. \\
+Resultado esperado & Contador mayor que cero; un elemento; 200 y 404. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{MFA en el core}
+\noindent\textit{Fichero:} \texttt{test/integration/mfa.test.ts}\par\medskip
+
+\begin{pruebabox}{123}{activar exige reautenticación previa (401 REAUTH\_REQUIRED)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-MFA-01; EP-C-21 \\
+Justificación & La activación emite un secreto y exige reautenticación. \\
+Escenario & Un usuario recién logueado inicia el enrolamiento. \\
+Resultado esperado & 401 \texttt{REAUTH\_REQUIRED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{124}{CA-13: escanea y confirma $\rightarrow$ MFA activo, 10 códigos de recuperación (no-store) y notificación}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-13; RF-MFA-01 a RF-MFA-03; RF-MFA-10; \S{}7.2.4; \S{}7.2.8 \\
+Justificación & El factor queda pendiente hasta confirmarse con un código válido; al confirmar se entregan 10 códigos de recuperación una sola vez, se rota la sesión y se notifica. \\
+Escenario & Reautenticación con contraseña errónea y correcta; enrolamiento; estado pendiente; confirmación errónea y correcta; nuevo enrolamiento. \\
+Resultado esperado & 401 y 200; URI \texttt{xchanger-otp:/\allowbreak{}/\allowbreak{}}, cuenta enmascarada y secreto agrupado; \texttt{pendingEnrollment}; 401 y luego 200 con 10 códigos, \texttt{no-store} y cookies rotadas; \texttt{MFA\_ENABLED}, notificación y evento; \texttt{MFA\_ALREADY\_ENABLED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{125}{cancelar un enrolamiento pendiente (EP-C-23)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-23 \\
+Justificación & El usuario puede cerrar el modal sin dejar un factor pendiente. \\
+Escenario & Se inicia y se cancela un enrolamiento. \\
+Resultado esperado & 204 y \texttt{pendingEnrollment} nulo. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{126}{CA-14: contraseña correcta $\rightarrow$ 200 mfaRequired, sin cookies de sesión}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-14; EP-C-19; RF-MFA-04 \\
+Justificación & Ninguna cookie de sesión se emite antes del segundo factor. \\
+Escenario & Un usuario con MFA inicia sesión. \\
+Resultado esperado & Cuerpo exacto \texttt{mfaRequired}; sin cookies de sesión; cookie \texttt{mfa\_challenge} HttpOnly, SameSite=Strict y con ruta restringida. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{127}{el segundo paso emite la sesión y la cookie de reto deja de valer}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-24 \\
+Justificación & El reto es de un solo uso. \\
+Escenario & Se completa el reto y se repite. \\
+Resultado esperado & 200 con el usuario y cookies de sesión; la repetición da 410. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{128}{CA-15: un código ya usado se rechaza (401 MFA\_INVALID\_CODE, reason REPLAYED)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-15; RF-MFA-05; \S{}7.2.5 regla 4 \\
+Justificación & Un código observado no debe poder reutilizarse. \\
+Escenario & Se usa un código en un login y el mismo en otro. \\
+Resultado esperado & El segundo da 401 con motivo \texttt{REPLAYED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{129}{cada reto admite como máximo 5 intentos; después hay que repetir el primer factor}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-MFA-06; \S{}7.2.5 reglas 6 y 7 \\
+Justificación & Limita la fuerza bruta sobre un código de 6 dígitos. \\
+Escenario & Cinco códigos erróneos, uno correcto sobre el reto agotado y un login nuevo. \\
+Resultado esperado & Restantes 4, 3, 2, 1 y 0; 410 \texttt{MFA\_CHALLENGE\_EXPIRED}; 423 \texttt{MFA\_LOCKED} con \texttt{retryAfter}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{130}{un código de recuperación sirve una vez, se registra y se notifica (RF-MFA-10)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-MFA-03; RF-MFA-10; \S{}7.2.6 \\
+Justificación & Los códigos de recuperación son de un solo uso, su uso queda auditado y se avisa al usuario. \\
+Escenario & Se usa un código en minúsculas, se reutiliza y se envía junto con un XOTP. \\
+Resultado esperado & 200; 401; \texttt{MFA\_RECOVERY\_USED} y notificación; 400. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{131}{el bloqueo solo se revela tras ambos factores (\S{}7.3)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}7.3 (orden de comprobaciones); RF-AUT-10 \\
+Justificación & Revelar el bloqueo tras el primer factor confirmaría la contraseña a un atacante. \\
+Escenario & Un usuario con MFA bloqueado inicia sesión y completa el reto. \\
+Resultado esperado & \texttt{mfaRequired} y después 403 \texttt{ACCOUNT\_BLOCKED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{132}{CA-17: mfa-service caído $\rightarrow$ 503 para usuarios con MFA; los demás entran con normalidad}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & CA-17; ADR-23; ADR-28; AR-15 \\
+Justificación & El sistema falla cerrado para quien tiene MFA sin afectar al resto. \\
+Escenario & El servicio cae; un usuario con MFA intenta completar el reto y uno sin MFA inicia sesión y consulta su estado. \\
+Resultado esperado & 503 \texttt{MFA\_SERVICE\_UNAVAILABLE}; login 200; estado \texttt{\{enabled: false, degraded: true\}}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{133}{RF-MFA-11: recuperar la contraseña no desactiva el MFA}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-MFA-11; \S{}7.2.8 \\
+Justificación & La recuperación de contraseña no debe ser un atajo para eludir el segundo factor. \\
+Escenario & Un usuario con MFA restablece la contraseña e inicia sesión. \\
+Resultado esperado & \texttt{mfaRequired}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{134}{desactivar exige contraseña y código; borra el factor y notifica}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-MFA-07; \S{}7.2.7 \\
+Justificación & Desactivar exige contraseña y código, y elimina el secreto (no solo lo marca). \\
+Escenario & Contraseña errónea, falta de código, petición correcta y repetición. \\
+Resultado esperado & 401; 400; 204, \texttt{mfaEnabled=false} y factor borrado; 409. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{135}{regenerar los códigos de recuperación anula los anteriores}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-MFA-08 \\
+Justificación & Los nuevos códigos invalidan los anteriores. \\
+Escenario & Se regeneran y se intenta usar uno antiguo. \\
+Resultado esperado & 10 códigos nuevos; el antiguo da 401. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{136}{RF-MFA-09: un administrador con ámbito restablece el MFA con motivo y revoca sesiones}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-MFA-09; EP-C-28; AR-05 \\
+Justificación & Recuperación ante pérdida del móvil y de los códigos, limitada al ámbito y con motivo obligatorio. \\
+Escenario & Un embajador restablece con motivo corto, a un usuario fuera de su ámbito, a uno de su ámbito y repite. \\
+Resultado esperado & 400; 403; 204 con MFA desactivado, refresh web anulado, sesión de canal revocada y log \texttt{MFA\_RESET}; 409. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{137}{EP-C-20: el bot puede leer el estado MFA, pero no gestionarlo}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & EP-C-20; \S{}9.8 ("la gestión de MFA no está disponible por canal") \\
+Justificación & El canal solo muestra el estado. \\
+Escenario & El bot lee el estado e inicia un enrolamiento. \\
+Resultado esperado & 200 y 403 \texttt{CHANNEL\_FORBIDDEN\_ROUTE}. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Bus de eventos, outbox y notificaciones multicanal}
+\noindent\textit{Fichero:} \texttt{test/integration/events.test.ts}\par\medskip
+
+\begin{pruebabox}{138}{el evento se persiste en el outbox y el publicador lo lleva al stream con el sobre común}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}5.7; \S{}11 (sobre común); ADR-22 \\
+Justificación & Los eventos se guardan en la misma base de datos y un publicador los lleva a Redis Streams con un formato estable para todos los consumidores. \\
+Escenario & Se publica \texttt{academic.\allowbreak{}changed} con audiencia duplicada y se vacía el outbox. \\
+Resultado esperado & Un evento con id, tipo, versión 1, productor, audiencia deduplicada y fecha válida; outbox marcado como publicado. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{139}{un evento publicado dentro de una transacción revertida nunca sale}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}5.7 punto 2; Arquitectura \S{}8.4 \\
+Justificación & Nunca debe anunciarse algo que luego se revierte. \\
+Escenario & Se publica dentro de una transacción que falla. \\
+Resultado esperado & Ningún evento llega al stream. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{140}{conserva el orden de publicación}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}11 ("orden por stream") \\
+Justificación & El bot debe recibir los eventos en el orden en que ocurrieron. \\
+Escenario & Se publican 5 eventos. \\
+Resultado esperado & Llegan en el mismo orden. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{141}{solo una réplica publica a la vez (lock en Redis)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}5.7 punto 3 \\
+Justificación & Con varias réplicas del core, solo una debe publicar para preservar el orden y evitar duplicados. \\
+Escenario & Otra réplica tiene el lock; se intenta vaciar el outbox y luego se libera. \\
+Resultado esperado & 0 y después 1 evento publicados. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{142}{los consumidores deduplican por id (entrega al menos una vez $\rightarrow$ efecto una vez)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}11 ("los consumidores deduplican por id"); ADR-22 \\
+Justificación & La garantía es al menos una vez; el efecto debe producirse una sola vez. \\
+Escenario & Se reinyecta un evento ya publicado. \\
+Resultado esperado & El manejador se ejecuta una vez. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{143}{un fallo del consumidor deja el evento pendiente y se reintenta}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & AR-10 (correo sin reintentos); \S{}5.7 punto 5 \\
+Justificación & La desviación AR-10 perdía correos fallidos; ahora el consumidor reintenta. \\
+Escenario & El manejador falla la primera vez. \\
+Resultado esperado & Se ejecuta dos veces y no quedan mensajes pendientes. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{144}{notification.created lleva los datos del contrato y el correo lo envía el consumidor con HTML escapado}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & \S{}5.8; \S{}11; RF-NOT-01; RF-NOT-06 \\
+Justificación & La notificación persistida se anuncia con su contrato, sin datos personales innecesarios, y el correo se construye con escapado. \\
+Escenario & Se crea una notificación con HTML en asunto y contenido y se procesa con el consumidor de correo. \\
+Resultado esperado & Evento con los campos del contrato y sin el email; correo con \texttt{\&lt;script\&gt;} y sin la etiqueta original. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{145}{la notificación se persiste aunque el envío de correo falle}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & RF-NOT-02 \\
+Justificación & La persistencia no depende del correo. \\
+Escenario & Se crea una notificación sin consumidor de correo activo. \\
+Resultado esperado & La notificación existe en la base de datos. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{146}{la app web sigue sin depender de Socket.io en los servicios (AR-04)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & Integración \\
+Requisito & AR-04; RNF-06 \\
+Justificación & Los servicios no deben emitir directamente a Socket.io; deben publicar eventos. \\
+Escenario & Se inspecciona el código fuente de todos los servicios. \\
+Resultado esperado & Ninguno contiene \texttt{getIo(} ni \texttt{emitToUser(}. \\
+\end{tabularx}
+\end{pruebabox}
+\section{Pruebas extremo a extremo (Cypress)}
+Cypress actúa como cliente HTTP externo, igual que el navegador o el bot, contra el core arrancado como proceso real (\texttt{src/server.ts}), con publicador de outbox y consumidores activos, un servidor SMTP real (Mailpit) y un stub HTTP del mfa-service que valida el JWT de servicio del core contra su JWKS (EP-C-02). Se ejecutan con \texttt{npm run test:e2e}.
+\subsection{Web: registro, sesión y contrato de errores}
+\noindent\textit{Fichero:} \texttt{e2e/cypress/e2e/01-web-auth.cy.js}\par\medskip
+
+\begin{pruebabox}{147}{CA-01..02: alta con OTP de correo real (Mailpit) e inicio de sesión}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & CA-01; CA-02; RF-AUT-01 a RF-AUT-08 \\
+Justificación & Verifica el alta con el core real y un servidor SMTP real (Mailpit), incluida la cookie del reto. \\
+Escenario & Registro con dominio ajeno y con dominio válido; lectura del OTP del correo real; verificación. \\
+Resultado esperado & \texttt{INVALID\_EMAIL\_DOMAIN}; 202 con \texttt{otp\_token} HttpOnly; 201; \texttt{/\allowbreak{}auth/\allowbreak{}me} con rol Estudiante. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{148}{login, refresco y logout; /api es alias de /api/v1}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & RF-AUT-11 a RF-AUT-13; \S{}5.6 \\
+Justificación & Ciclo completo de sesión desde un cliente HTTP con cookies reales. \\
+Escenario & Login, comprobación de la ruta de la cookie de refresco, refresco, logout y consulta. \\
+Resultado esperado & Cookie HttpOnly, ruta del refresh acotada, 200, 200 y 401. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{149}{RF-AUT-09: respuesta genérica idéntica para email inexistente y contraseña errónea}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & RF-AUT-09 \\
+Justificación & Comprobación de extremo a extremo de la anti-enumeración. \\
+Escenario & Dos logins fallidos de naturaleza distinta. \\
+Resultado esperado & Mismo estado y mensaje. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{150}{\S{}5.10: errores con code estable y eco de X-Request-Id}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & \S{}5.10; \S{}9.1 \\
+Justificación & El contrato de error se observa en el servidor real. \\
+Escenario & Petición sin sesión con \texttt{X-Request-Id}. \\
+Resultado esperado & 401 con \texttt{code} y \texttt{requestId} en cuerpo y cabecera. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{151}{EP-C-30: /health con marca de tiempo y dependencias desde la red interna}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & EP-C-30; RNF-10 \\
+Justificación & La salud refleja las dependencias reales: PostgreSQL, Redis y el stub del mfa-service. \\
+Escenario & \texttt{GET /\allowbreak{}health?deep=true}. \\
+Resultado esperado & \texttt{\{db, redis, mfa\}} en \texttt{up}. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Web: ofertas y chat}
+\noindent\textit{Fichero:} \texttt{e2e/cypress/e2e/02-offers.cy.js}\par\medskip
+
+\begin{pruebabox}{152}{CA-04 + CA-06: publicar, encontrar la complementaria, aceptar, chatear y cerrar}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & CA-04; CA-06; RF-OFE-01 a RF-OFE-10; RF-CHT-01 a RF-CHT-08 \\
+Justificación & Recorrido completo del caso de uso principal entre dos estudiantes reales con sesiones independientes. \\
+Escenario & Ana publica; Beto busca, acepta y escribe; Ana lee, revisa notificaciones, cierra dos veces y escribe. \\
+Resultado esperado & Búsqueda exacta; ACCEPTED; mensaje guardado; notificaciones de aceptación y mensaje; cierre 200, luego \texttt{OFFER\_ALREADY\_CLOSED} y \texttt{CHAT\_CLOSED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{153}{RF-NOT-01: las notificaciones también llegan por correo (consumidor email-sender)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & RF-NOT-01; RA-09; \S{}5.7 \\
+Justificación & Doble canal: sistema y correo, ahora a través del bus de eventos y el consumidor de correo. \\
+Escenario & Ana inicia sesión y publica una oferta; se consulta Mailpit de forma reiterada. \\
+Resultado esperado & Al menos dos correos (aviso de inicio de sesión y oferta publicada). \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{Canal Telegram (consumidor externo de la API)}
+\noindent\textit{Fichero:} \texttt{e2e/cypress/e2e/03-telegram-channel.cy.js}\par\medskip
+
+\begin{pruebabox}{154}{CA-18: vincular por código y operar como el bot}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & CA-18; RF-TGB-01; RF-TGB-04 \\
+Justificación & Simula exactamente las peticiones HTTP del bot frente al core real. \\
+Escenario & Vinculación completa y consultas de perfil, expediente, grupos y ofertas. \\
+Resultado esperado & Email correcto, una asignatura, tres grupos y lista paginada vacía. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{155}{CA-19: un update reintentado por Telegram crea una sola oferta}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & CA-19; EP-C-29 \\
+Justificación & Idempotencia sobre el servidor real con Redis real. \\
+Escenario & Dos POST idénticos con \texttt{tg:123456}. \\
+Resultado esperado & Mismo id, \texttt{Idempotent-Replayed} y una sola oferta. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{156}{CA-21: sin credencial de servicio $\rightarrow$ 401; rutas de administración $\rightarrow$ 403 CHANNEL\_FORBIDDEN\_ROUTE}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & CA-21; RF-TGB-11 \\
+Justificación & Política de canal comprobada de extremo a extremo. \\
+Escenario & Una Propietaria vinculada usa el token sin servicio y contra \texttt{/\allowbreak{}admin/\allowbreak{}logs}. \\
+Resultado esperado & 401 y \texttt{CHANNEL\_FORBIDDEN\_ROUTE}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{157}{refresco con rotación y desvinculación desde el bot (RF-TGB-09)}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & RF-TGB-09; ADR-18 \\
+Justificación & Gestión del ciclo de vida de la sesión de canal. \\
+Escenario & Refresco, revocación de identidad y nueva consulta. \\
+Resultado esperado & Token rotado; 204; 401. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{158}{CA-20: un embajador bloquea al usuario y el bot deja de poder operar}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & CA-20; RF-TGB-10 \\
+Justificación & El bloqueo web se propaga al canal. \\
+Escenario & La Propietaria bloquea a Ana y el bot consulta. \\
+Resultado esperado & 200 al bloquear y 401 en el bot. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{159}{RF-TGB-03: alta desde el bot sin contraseña, con el OTP real de correo}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & RF-TGB-03; ADR-29 \\
+Justificación & Alta completa por chat con correo real. \\
+Escenario & Registro desde el bot, lectura del OTP en Mailpit y canje. \\
+Resultado esperado & 202 y sesión con \texttt{hasExpediente: false}. \\
+\end{tabularx}
+\end{pruebabox}
+\subsection{MFA con protocolo XOTP (core como relying party)}
+\noindent\textit{Fichero:} \texttt{e2e/cypress/e2e/04-mfa.cy.js}\par\medskip
+
+\begin{pruebabox}{160}{CA-13 + CA-14: activar y entrar con segundo factor; sin cookies de sesión antes del código}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & CA-13; CA-14; RF-MFA-01 a RF-MFA-04 \\
+Justificación & Integración real core $\leftrightarrow$ mfa-service: el stub valida el JWT del core contra su JWKS, como haría el servicio real. \\
+Escenario & Reautenticación, enrolamiento, confirmación con un código TOTP real y login con reto. \\
+Resultado esperado & Respuestas \texttt{no-store}, 10 códigos, \texttt{mfaRequired} exacto, sin \texttt{access\_token} antes del código y \texttt{mfaEnabled: true} al final. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{161}{CA-15: reenviar un código ya usado $\rightarrow$ 401 REPLAYED}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & CA-15; RF-MFA-05 \\
+Justificación & Antirreplay a través de la red. \\
+Escenario & El mismo código se usa en dos logins. \\
+Resultado esperado & Segundo intento 401 con motivo \texttt{REPLAYED}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{162}{CA-17: mfa-service caído $\rightarrow$ 503 para usuarios con MFA; los demás entran}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & CA-17; AR-15 \\
+Justificación & Caída real del servicio dependiente. \\
+Escenario & Se apaga el stub; login con y sin MFA. \\
+Resultado esperado & \texttt{MFA\_SERVICE\_UNAVAILABLE} y login normal. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{163}{CA-22: por el bot, OTP de correo + XOTP antes de emitir la sesión}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & CA-22; RF-TGB-02 \\
+Justificación & Ningún canal elude el segundo factor, verificado con correo real y TOTP real. \\
+Escenario & OTP por correo, canje, código XOTP y canje final. \\
+Resultado esperado & \texttt{mfaRequired} sin \texttt{accessToken}; después 200 con \texttt{mfaEnabled: true}. \\
+\end{tabularx}
+\end{pruebabox}
+
+\begin{pruebabox}{164}{RF-MFA-09: la propietaria restablece el MFA de un estudiante}
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}p{2.9cm}X@{}}
+Tipo & E2E (Cypress) \\
+Requisito & RF-MFA-09 \\
+Justificación & Recuperación administrativa de extremo a extremo. \\
+Escenario & Activación, restablecimiento por la Propietaria y login del estudiante. \\
+Resultado esperado & 204 y login posterior sin segundo factor. \\
+\end{tabularx}
+\end{pruebabox}
+
+
+%════════════════════════════════════════════════════════════════════
+\chapter{Despliegue}
+
+\section{Visión general}
+El sistema se despliega como un conjunto de contenedores orquestados con Docker Compose en una máquina virtual de Microsoft Azure. Cloudflare actúa como borde: resuelve el dominio, termina TLS frente al usuario y reenvía el tráfico al origen cifrado. En la máquina virtual, Nginx es el único proceso que escucha en la red pública.
+
+\begin{center}
+\small
+\begin{tabular}{@{}c@{}}
+Navegador / Telegram \\ $\downarrow$ HTTPS (certificado de borde de Cloudflare) \\
+\fbox{Cloudflare: DNS proxificado, TLS, WAF} \\ $\downarrow$ HTTPS (modo \emph{Full (strict)}, certificado de origen) \\
+\fbox{VM de Azure: NSG con 443 abierto solo a rangos de Cloudflare} \\ $\downarrow$ \\
+\fbox{Nginx} $\rightarrow$ \fbox{Frontend Astro} \quad \fbox{Core Express + Socket.io} \\ $\downarrow$ red Docker privada \\
+\fbox{PostgreSQL 15} \quad \fbox{Redis 7} \\
+\end{tabular}
+\end{center}
+
+\section{Orquestación con Docker Compose}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+Servicio & Imagen & Comportamiento \\
+\midrule
+db & postgres:15-alpine & Volumen persistente; comprobación de salud con \texttt{pg\_isready}; sin puerto publicado. \\
+redis & redis:7-alpine & AOF activado y volumen persistente; comprobación con \texttt{redis-cli ping}; sin puerto publicado. Soporta el bus de eventos, el limitador, la idempotencia y el adaptador de Socket.io. \\
+backend & node:20, dos etapas & Espera a \texttt{db} y \texttt{redis} sanos; aplica las migraciones pendientes al arrancar (RCF-06) y valida el entorno con Zod (RCF-02). El puerto 3000 ya no se publica (AR-02). \\
+frontend & node:20, dos etapas & Astro SSR; llama al core por la red interna. \\
+nginx & nginx:1.27-alpine & Único punto de entrada. Encamina \texttt{/api} y \texttt{/socket.io} al core y el resto al frontend; devuelve 404 para \texttt{/api/(v1/)service-auth} y \texttt{/api/(v1/)internal} (escalado §12.2). \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+El orden de arranque forma una cadena con condición de salud, de modo que ningún contenedor recibe tráfico antes de poder atenderlo. El core comprueba la base de datos y Redis antes de abrir el puerto y se cierra limpiamente ante \texttt{SIGTERM} (RNF-05).
+
+\paragraph{Procedimiento de despliegue.}
+\begin{enumerate}[leftmargin=*,itemsep=0pt]
+\item Actualizar el código en la VM (\texttt{git pull} o descarga de imágenes versionadas, RCF-07).
+\item Revisar \texttt{.env} y \texttt{backend/.env}; las variables nuevas obligatorias son \texttt{JWT\_CHANNEL\_SECRET}, \texttt{SERVICE\_JWT\_PRIVATE\_KEY} y \texttt{SERVICE\_CLIENTS}.
+\item \texttt{docker compose up -d --build}; las migraciones se aplican solas.
+\item Verificar \texttt{GET /health} desde fuera y \texttt{GET /health?deep=true} desde la red interna.
+\end{enumerate}
+\textbf{Reversión:} volver a la etiqueta anterior y repetir el paso 3. Las migraciones del escalado solo añaden tablas, columnas nulables e índices, por lo que la versión anterior del core sigue funcionando sobre el esquema nuevo.
+
+\section{Infraestructura en Microsoft Azure}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+\item \textbf{Máquina virtual Linux} con Docker Engine y el plugin de Compose. Los datos de PostgreSQL y Redis residen en volúmenes con nombre sobre el disco gestionado de la VM.
+\item \textbf{Grupo de seguridad de red (NSG):} entrada permitida solo al puerto 443 (y 80 si se mantiene la redirección), restringida a los rangos IP publicados por Cloudflare; SSH limitado a direcciones de administración. Ningún otro puerto es accesible.
+\item \textbf{Copias de seguridad:} instantáneas del disco gestionado y volcados periódicos de PostgreSQL fuera de la VM.
+\item \textbf{Secretos:} nunca forman parte de la imagen; se inyectan por los ficheros \texttt{.env} de la VM (RCF-01). La evolución prevista (F4) es Azure Key Vault para la clave de firma de servicios.
+\end{itemize}
+
+\section{TLS y red con Cloudflare}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+\item \textbf{DNS proxificado:} el registro del dominio apunta a la IP pública de la VM con el proxy de Cloudflare activo, de modo que la IP de origen no queda expuesta.
+\item \textbf{Cifrado de extremo a extremo:} modo SSL/TLS \emph{Full (strict)}. Cloudflare presenta su certificado al usuario y valida en el origen un certificado de origen emitido por Cloudflare e instalado en Nginx. Se fuerza HTTPS y se activa HSTS, lo que resuelve AR-01 y permite las cookies \texttt{Secure}.
+\item \textbf{Autenticación del origen:} \emph{Authenticated Origin Pulls} o la restricción del NSG a los rangos de Cloudflare impiden saltarse el borde.
+\item \textbf{IP real del cliente:} Nginx toma la IP de \texttt{CF-Connecting-IP} solo cuando la petición procede de rangos de Cloudflare; el core usa \texttt{trust proxy} y \texttt{req.ip} (AR-02), de lo que dependen el limitador de intentos y el historial de accesos.
+\item \textbf{WebSocket:} Cloudflare reenvía la actualización de protocolo de \texttt{/socket.io}; Nginx mantiene las cabeceras \texttt{Upgrade} y \texttt{Connection}.
+\item \textbf{Webhook del bot (cuando se despliegue):} \texttt{POST /telegram/webhook} pasará por el mismo borde; Telegram exige HTTPS válido, que Cloudflare proporciona.
+\end{itemize}
+
+\section{Variables de entorno nuevas}
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Variable & Uso \\
+\midrule
+\texttt{REDIS\_URL} & Bus de eventos, límites, idempotencia y adaptador de sockets. \\
+\texttt{JWT\_CHANNEL\_SECRET} & Firma de tokens de canal (al menos 32 caracteres). \\
+\texttt{SERVICE\_JWT\_PRIVATE\_KEY}, \texttt{SERVICE\_JWT\_KID} & Clave ES256 de los JWT de servicio; obligatoria en producción. \\
+\texttt{SERVICE\_CLIENTS} & Clientes de servicio con el SHA-256 de su secreto y sus scopes. \\
+\texttt{CHANNEL\_*} & Caducidades de sesión de canal y URL de la página de aprobación. \\
+\texttt{MFA\_SERVICE\_URL}, \texttt{MFA\_TIMEOUT\_MS} & Cliente del mfa-service. \\
+\texttt{TRUST\_PROXY\_HOPS}, \texttt{OUTBOX\_POLL\_MS} & Proxy de confianza e intervalo del publicador. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}

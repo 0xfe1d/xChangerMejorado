@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient, User, PendingRegistration, Role } from '@prisma/client';
+import { Prisma, User, PendingRegistration, Role } from '@prisma/client';
 import { prisma } from '../config/prisma';
 
 // Todas las consultas aplican el filtro deletedAt: null para respetar Soft Delete
@@ -18,7 +18,7 @@ export async function findUserById(id: string): Promise<User | null> {
 export type CreateUserInput = {
   email: string;
   name: string;
-  passwordHash: string;
+  passwordHash: string | null;
   carreraId: string;
   cursoId: string;
   asignaturaIds: string[];
@@ -56,6 +56,8 @@ export async function createPendingRegistration(
       cursoId: data.cursoId,
       otpCodeHash: data.otpCodeHash,
       jwtJti: data.jwtJti,
+      origin: data.origin,
+      externalUserId: data.externalUserId ?? null,
       expiresAt: data.expiresAt,
     },
     create: data,

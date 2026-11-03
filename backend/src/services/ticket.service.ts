@@ -5,7 +5,7 @@ import { prisma } from '../config/prisma';
 import * as ticketRepo from '../repositories/ticket.repository';
 import { notifyMany } from './notification.service';
 import { logAction } from './log.service';
-import { getIo } from '../sockets/socket.server';
+import { publish } from '../events/event-publisher';
 
 // ── Helpers de ámbito ─────────────────────────────────────────
 
@@ -60,7 +60,7 @@ export async function closeTicket(ticketId: string, requesterId: string, request
 
   const updated = await ticketRepo.updateTicketStatus(ticketId, TicketStatus.CLOSED);
 
-  getIo().to(`ticket:${ticketId}`).emit('ticket_closed', { ticketId });
+  await publish('ticket.closed', { ticketId }, { audience: [ticket.userId] });
 
   logAction({
     userId: requesterId,
@@ -154,14 +154,19 @@ export async function sendTicketMessage(
 
   const message = await ticketRepo.addMessage(ticketId, authorId, trimmed);
 
-  // Emitir el mensaje a la sala en tiempo real
-  getIo().to(`ticket:${ticketId}`).emit('new_ticket_message', {
-    id: message.id,
-    ticketId,
-    content: message.content,
-    timestamp: message.timestamp,
-    author: message.author,
-  });
+  // Difusión por el bus de eventos (la pasarela de sockets lo emite a la sala)
+  await publish(
+    'ticket.message.created',
+    {
+      ticketId,
+      messageId: message.id,
+      authorId,
+      authorName: message.author.name,
+      content: message.content,
+      timestamp: message.timestamp.toISOString(),
+    },
+    { audience: [ticket.userId, ...(ticket.adminId ? [ticket.adminId] : [])] },
+  );
 
   // Notificación al creador del ticket si el mensaje lo envía el admin (y viceversa)
   const recipientId = ticket.userId === authorId ? (ticket.adminId ?? null) : ticket.userId;
@@ -173,15 +178,13 @@ export async function sendTicketMessage(
     : null;
 
   if (recipient) {
+    // notification.created ya avisa en tiempo real por la sala personal
     await notifyMany(
-      [{ userId: recipient.id, email: recipient.email }],
+      [{ userId: recipient.id }],
       `Nuevo mensaje en tu ticket: ${ticket.asunto}`,
       `Has recibido un nuevo mensaje en el ticket "${ticket.asunto}".`,
+      { kind: 'TICKET_MESSAGE', refs: { ticketId } },
     );
-    // Notificación en tiempo real a la sala personal
-    getIo()
-      .to(`user:${recipient.id}`)
-      .emit('receive_notification', { type: 'new_ticket_message', ticketId });
   }
 
   return message;

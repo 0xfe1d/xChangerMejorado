@@ -1,5 +1,8 @@
-import { Offer, OfferStatus } from '@prisma/client';
+import { OfferStatus, Prisma } from '@prisma/client';
 import { prisma } from '../config/prisma';
+import { CursorPosition, afterCursorWhere } from '../utils/cursor';
+
+type Db = Prisma.TransactionClient | typeof prisma;
 
 // Incluye las relaciones necesarias para mostrar ofertas al cliente
 const OFFER_INCLUDE = {
@@ -10,51 +13,73 @@ const OFFER_INCLUDE = {
   acceptedBy: { select: { id: true, name: true, email: true } },
 } as const;
 
-export type OfferWithRelations = Awaited<ReturnType<typeof findById>>;
+export type OfferWithRelations = NonNullable<Awaited<ReturnType<typeof findById>>>;
 
 export interface SearchOffersFilter {
   asignaturaId?: string;
   grupoDeseadoId?: string;
   grupoActualId?: string;
+  /** Solo en modo paginado: excluye las ofertas propias (EP-C-12). */
+  excludeUserId?: string;
+  limit?: number;
+  after?: CursorPosition | null;
 }
 
-/** Devuelve ofertas OPEN con entidades padre no eliminadas (Soft Delete en cascada lógica) */
+/** Ofertas OPEN complementarias con entidades padre no eliminadas (RF-OFE-04/05, RF-ACA-07). */
 export async function findActiveOffers(filter: SearchOffersFilter = {}) {
   return prisma.offer.findMany({
     where: {
       status: OfferStatus.OPEN,
       deletedAt: null,
-      // Excluye ofertas cuya asignatura o grupos hayan sido eliminados lógicamente
-      asignatura: { deletedAt: null },
+      asignatura: { deletedAt: null, curso: { deletedAt: null, carrera: { deletedAt: null } } },
       grupoDeseado: { deletedAt: null },
       grupoActual: { deletedAt: null },
       ...(filter.asignaturaId ? { asignaturaId: filter.asignaturaId } : {}),
-      // Búsqueda complementaria: el buscador TIENE grupoActual y DESEA grupoDeseado,
-      // por lo que buscamos ofertas cuyo creador TIENE grupoDeseado y DESEA grupoActual.
+      // El buscador TIENE grupoActual y DESEA grupoDeseado: se buscan ofertas
+      // cuyo creador TIENE grupoDeseado y DESEA grupoActual.
       ...(filter.grupoDeseadoId ? { grupoActualId: filter.grupoDeseadoId } : {}),
       ...(filter.grupoActualId ? { grupoDeseadoId: filter.grupoActualId } : {}),
+      ...(filter.excludeUserId ? { userId: { not: filter.excludeUserId } } : {}),
+      ...afterCursorWhere(filter.after ?? null),
     },
     include: OFFER_INCLUDE,
-    orderBy: { createdAt: 'desc' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    ...(filter.limit ? { take: filter.limit + 1 } : {}),
   });
 }
 
-export async function findById(id: string) {
-  return prisma.offer.findFirst({
-    where: { id, deletedAt: null },
-    include: OFFER_INCLUDE,
-  });
+export async function findById(id: string, db: Db = prisma) {
+  return db.offer.findFirst({ where: { id, deletedAt: null }, include: OFFER_INCLUDE });
 }
 
-/** Todas las ofertas en las que el usuario participa (creador o aceptante) */
+export interface UserOffersFilter {
+  userId: string;
+  statuses?: OfferStatus[];
+  role?: 'creator' | 'acceptor' | 'any';
+  limit?: number;
+  after?: CursorPosition | null;
+}
+
+/** Ofertas en las que participa el usuario (creador o aceptante). */
 export async function findByUserId(userId: string) {
+  return findForUser({ userId });
+}
+
+export async function findForUser(f: UserOffersFilter) {
+  const roleWhere =
+    f.role === 'creator' ? { userId: f.userId } : f.role === 'acceptor' ? { acceptedById: f.userId } : { OR: [{ userId: f.userId }, { acceptedById: f.userId }] };
   return prisma.offer.findMany({
     where: {
-      OR: [{ userId }, { acceptedById: userId }],
-      deletedAt: null,
+      AND: [
+        roleWhere,
+        { deletedAt: null },
+        f.statuses?.length ? { status: { in: f.statuses } } : {},
+        afterCursorWhere(f.after ?? null),
+      ],
     },
     include: OFFER_INCLUDE,
-    orderBy: { createdAt: 'desc' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    ...(f.limit ? { take: f.limit + 1 } : {}),
   });
 }
 
@@ -65,37 +90,53 @@ export interface CreateOfferInput {
   grupoActualId: string;
 }
 
-export async function createOffer(input: CreateOfferInput) {
-  return prisma.offer.create({
-    data: {
-      userId: input.userId,
-      asignaturaId: input.asignaturaId,
-      grupoDeseadoId: input.grupoDeseadoId,
-      grupoActualId: input.grupoActualId,
-      status: OfferStatus.OPEN,
-    },
+export async function createOffer(input: CreateOfferInput, db: Db = prisma) {
+  return db.offer.create({
+    data: { ...input, status: OfferStatus.OPEN },
     include: OFFER_INCLUDE,
   });
 }
 
-export async function updateStatus(
-  id: string,
-  status: OfferStatus,
-  acceptedById?: string,
-): Promise<Offer> {
-  return prisma.offer.update({
-    where: { id },
-    data: {
-      status,
-      ...(acceptedById !== undefined ? { acceptedById } : {}),
-    },
+/**
+ * AR-06: transición OPEN → ACCEPTED como actualización condicional atómica.
+ * Devuelve true solo para el único aceptante que gana la carrera.
+ */
+export async function acceptIfOpen(id: string, acceptorId: string, db: Db = prisma): Promise<boolean> {
+  const { count } = await db.offer.updateMany({
+    where: { id, status: OfferStatus.OPEN, deletedAt: null, userId: { not: acceptorId } },
+    data: { status: OfferStatus.ACCEPTED, acceptedById: acceptorId },
+  });
+  return count === 1;
+}
+
+/** Cierre condicional: devuelve false si ya estaba cerrada (RF-OFE-10). */
+export async function closeIfNotClosed(id: string, db: Db = prisma): Promise<boolean> {
+  const { count } = await db.offer.updateMany({
+    where: { id, deletedAt: null, status: { not: OfferStatus.CLOSED } },
+    data: { status: OfferStatus.CLOSED },
+  });
+  return count === 1;
+}
+
+/** Marca como INACTIVE todas las ofertas OPEN de un usuario (al ser bloqueado). */
+export async function deactivateUserOffers(userId: string, db: Db = prisma): Promise<void> {
+  await db.offer.updateMany({
+    where: { userId, status: OfferStatus.OPEN, deletedAt: null },
+    data: { status: OfferStatus.INACTIVE },
   });
 }
 
-/** Marca como INACTIVE todas las ofertas OPEN de un usuario (al ser bloqueado) */
-export async function deactivateUserOffers(userId: string): Promise<void> {
-  await prisma.offer.updateMany({
-    where: { userId, status: OfferStatus.OPEN, deletedAt: null },
-    data: { status: OfferStatus.INACTIVE },
+export async function createOfferMessage(offerId: string, authorId: string, content: string, db: Db = prisma) {
+  return db.message.create({
+    data: { offerId, authorId, content },
+    include: { author: { select: { id: true, name: true } } },
+  });
+}
+
+export async function findOfferMessages(offerId: string) {
+  return prisma.message.findMany({
+    where: { offerId },
+    include: { author: { select: { id: true, name: true } } },
+    orderBy: [{ timestamp: 'asc' }, { id: 'asc' }],
   });
 }

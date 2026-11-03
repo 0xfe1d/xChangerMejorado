@@ -4,6 +4,8 @@
 .env
 .env.*
 !.env.example
+# Solo credenciales de prueba para la infraestructura efímera de tests
+!backend/.env.test
 *.pem
 *.key
 *.cert

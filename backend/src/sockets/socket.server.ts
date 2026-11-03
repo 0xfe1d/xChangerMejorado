@@ -1,101 +1,83 @@
 import { Server, Socket } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
 import jwt from 'jsonwebtoken';
 import { Role } from '@prisma/client';
 
 import { env } from '../config/env';
 import { prisma } from '../config/prisma';
+import { createRedisConnection } from '../config/redis';
 import { AccessTokenPayload } from '../middleware/authenticate';
+import { liftExpiredBlock } from '../services/account-state.service';
 import { registerOfferHandlers } from './handlers/offer.handler';
 import { registerTicketHandlers } from './handlers/ticket.handler';
 
-// La instancia de io se inyecta desde server.ts
-let _io: Server;
+// La instancia de io se inyecta desde server.ts. Los servicios NO la usan
+// (AR-04): solo la pasarela de eventos (events/consumers.ts) emite.
+let _io: Server | null = null;
 
 export function getIo(): Server {
   if (!_io) throw new Error('Socket.io no ha sido inicializado');
   return _io;
 }
 
-// Extiende el tipo Socket para llevar el usuario autenticado
+export function getIoOrNull(): Server | null {
+  return _io;
+}
+
 export interface AuthenticatedSocket extends Socket {
   user: AccessTokenPayload;
 }
 
 /**
- * Inicializa el servidor de Socket.io:
- *  1. Middleware de autenticación JWT (desde cookie access_token).
- *  2. Registro de handlers por dominio.
+ * Inicializa Socket.io:
+ *  1. Adaptador Redis para que varias réplicas del core compartan salas (AR-08).
+ *  2. Autenticación en el handshake con la cookie access_token (RE-WS).
+ *  3. Handlers por dominio.
  */
-export function initSocketServer(io: Server): void {
+export function initSocketServer(io: Server, opts: { redisAdapter?: boolean } = {}): void {
   _io = io;
 
-  // ── Middleware de autenticación en el handshake ───────────
+  if (opts.redisAdapter !== false) {
+    const pub = createRedisConnection('socket-pub');
+    const sub = pub.duplicate();
+    io.adapter(createAdapter(pub, sub));
+  }
+
   io.use(async (socket, next) => {
-    // El cliente envía la cookie access_token en el handshake
     const rawCookies: string = socket.handshake.headers.cookie ?? '';
-    const token = parseCookieValue(rawCookies, 'access_token')
-      ?? (socket.handshake.auth?.token as string | undefined);
+    const token = parseCookieValue(rawCookies, 'access_token') ?? (socket.handshake.auth?.token as string | undefined);
+    if (!token) return next(new Error('Autenticación requerida'));
 
-    if (!token) {
-      return next(new Error('Autenticación requerida'));
-    }
-
-    let payload: AccessTokenPayload;
+    let payload: AccessTokenPayload & { purpose?: string };
     try {
-      payload = jwt.verify(token, env.JWT_ACCESS_SECRET) as AccessTokenPayload;
+      payload = jwt.verify(token, env.JWT_ACCESS_SECRET, { algorithms: ['HS256'] }) as AccessTokenPayload & { purpose?: string };
+      if (payload.purpose) throw new Error('purpose');
     } catch {
       return next(new Error('Token inválido o expirado'));
     }
 
-    // Verificar que el usuario sigue activo y no está bloqueado
     const user = await prisma.user.findFirst({
       where: { id: payload.sub, deletedAt: null },
-      select: { role: true },
+      select: { id: true, role: true, blockedUntil: true, blockReason: true },
     });
+    if (!user || (await liftExpiredBlock(user)) === Role.BLOQUEADO) return next(new Error('Acceso denegado'));
 
-    if (!user || user.role === Role.BLOQUEADO) {
-      return next(new Error('Acceso denegado'));
-    }
-
-    (socket as AuthenticatedSocket).user = payload;
+    (socket as AuthenticatedSocket).user = { ...payload, role: user.role };
     next();
   });
 
-  // ── Registro de handlers ──────────────────────────────────
   io.on('connection', (socket) => {
     const authSocket = socket as AuthenticatedSocket;
-    const userId = authSocket.user.sub;
-
-    // Sala personal del usuario: recibe notificaciones del sistema
-    void socket.join(`user:${userId}`);
-
-    console.log(`[socket] usuario ${userId} conectado (${socket.id})`);
-
+    void socket.join(`user:${authSocket.user.sub}`);
     registerOfferHandlers(io, authSocket);
     registerTicketHandlers(io, authSocket);
-
-    socket.on('disconnect', () => {
-      console.log(`[socket] usuario ${userId} desconectado (${socket.id})`);
-    });
   });
 }
 
-// ── Helpers ───────────────────────────────────────────────────
-
-/** Extrae el valor de una cookie por nombre desde la cadena raw */
 function parseCookieValue(cookieHeader: string, name: string): string | undefined {
   const entry = cookieHeader
     .split(';')
     .map((c) => c.trim())
     .find((c) => c.startsWith(`${name}=`));
   return entry ? decodeURIComponent(entry.slice(name.length + 1)) : undefined;
-}
-
-/**
- * Emite una notificación en tiempo real a la sala personal de un usuario.
- * Si el usuario no está conectado, se ignora silenciosamente
- * (la notificación persistente ya se guardó en BD).
- */
-export function emitToUser(userId: string, event: string, payload: unknown): void {
-  _io?.to(`user:${userId}`).emit(event, payload);
 }

@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import { authenticate } from '../middleware/authenticate';
+import { allowClients, authenticate } from '../middleware/authenticate';
 import * as notificationController from '../controllers/notification.controller';
 
 const router = Router();
 
-router.use(authenticate);
+// EP-R-14..16 — W, S+U
+router.use(allowClients('web', 'channel'), authenticate);
 
 router.get('/unread-count', notificationController.getUnreadCount);
 router.get('/', notificationController.getNotifications);

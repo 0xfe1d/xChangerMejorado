@@ -1,11 +1,13 @@
 # ── Stage 1: Build ────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:20-slim AS builder
 WORKDIR /app
+
+# openssl requerido por el schema engine de Prisma durante generate
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 RUN npm ci
 
-# Generar Prisma Client antes de compilar TypeScript
 COPY prisma ./prisma
 RUN npx prisma generate
 
@@ -14,8 +16,8 @@ COPY src ./src
 RUN npm run build
 
 # ── Stage 2: Runner ───────────────────────────────────────────
-FROM node:20-alpine
-RUN apk add --no-cache dumb-init wget
+FROM node:20-slim
+RUN apt-get update && apt-get install -y --no-install-recommends dumb-init wget openssl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 ENV NODE_ENV=production
@@ -28,6 +30,9 @@ COPY package.json ./
 
 EXPOSE 3000
 
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x entrypoint.sh
+
 # dumb-init gestiona señales SIGTERM/SIGINT correctamente
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "dist/server.js"]
+CMD ["/bin/sh", "entrypoint.sh"]

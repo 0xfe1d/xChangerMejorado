@@ -46,3 +46,33 @@ export function verifyOtpToken(token: string): OtpTokenPayload {
   }
   return payload;
 }
+
+// ── Tokens de propósito específico (retos efímeros) ───────────
+
+export type TokenPurpose = 'otp_verify' | 'mfa_challenge' | 'channel_email_otp' | 'channel_register' | 'channel_mfa';
+
+export interface PurposeTokenPayload {
+  sub: string;
+  jti: string;
+  purpose: TokenPurpose;
+  [claim: string]: unknown;
+}
+
+/** JWT de un solo propósito, ligado a un jti que el servidor registra y consume. */
+export function signPurposeToken(
+  purpose: TokenPurpose,
+  sub: string,
+  ttlSeconds: number,
+  extra: Record<string, unknown> = {},
+): { token: string; jti: string } {
+  const jti = crypto.randomUUID();
+  const token = jwt.sign({ ...extra, sub, purpose }, env.JWT_ACCESS_SECRET, { expiresIn: ttlSeconds, jwtid: jti, algorithm: 'HS256' });
+  return { token, jti };
+}
+
+/** Lanza TokenExpiredError si caducó o Error si no es del propósito pedido. */
+export function verifyPurposeToken(token: string, purpose: TokenPurpose): PurposeTokenPayload {
+  const payload = jwt.verify(token, env.JWT_ACCESS_SECRET, { algorithms: ['HS256'] }) as PurposeTokenPayload;
+  if (payload.purpose !== purpose || !payload.jti) throw new Error('Token de propósito incorrecto');
+  return payload;
+}

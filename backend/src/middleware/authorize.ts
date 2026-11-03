@@ -9,20 +9,33 @@ async function carreraIdFromCurso(cursoId: string): Promise<string | null> {
   return curso?.carreraId ?? null;
 }
 
-async function carreraIdFromAsignatura(asignaturaId: string): Promise<string | null> {
+type Location = { carreraId: string; cursoId: string };
+
+async function locationFromAsignatura(asignaturaId: string): Promise<Location | null> {
   const asig = await prisma.asignatura.findFirst({
     where: { id: asignaturaId },
-    select: { curso: { select: { carreraId: true } } },
+    select: { cursoId: true, curso: { select: { carreraId: true } } },
   });
-  return asig?.curso.carreraId ?? null;
+  return asig ? { carreraId: asig.curso.carreraId, cursoId: asig.cursoId } : null;
 }
 
-async function carreraIdFromGrupo(grupoId: string): Promise<string | null> {
+async function locationFromGrupo(grupoId: string): Promise<Location | null> {
   const grupo = await prisma.grupo.findFirst({
     where: { id: grupoId },
-    select: { asignatura: { select: { curso: { select: { carreraId: true } } } } },
+    select: { asignatura: { select: { cursoId: true, curso: { select: { carreraId: true } } } } },
   });
-  return grupo?.asignatura.curso.carreraId ?? null;
+  return grupo ? { carreraId: grupo.asignatura.curso.carreraId, cursoId: grupo.asignatura.cursoId } : null;
+}
+
+/**
+ * Regla de cobertura (Arquitectura §6.2, corrige AR-05): un ámbito con curso
+ * nulo cubre toda la carrera; uno con curso concreto cubre solo ese curso.
+ */
+export async function scopeCovers(userId: string, loc: Location): Promise<boolean> {
+  const scope = await prisma.adminScope.findFirst({
+    where: { userId, carreraId: loc.carreraId, OR: [{ cursoId: null }, { cursoId: loc.cursoId }] },
+  });
+  return scope !== null;
 }
 
 /**
@@ -139,13 +152,9 @@ export function requireScopeViaAsignatura(key = 'asignaturaId') {
     const asignaturaId = (req.params[key] ?? req.body[key] ?? req.query[key]) as string | undefined;
     if (!asignaturaId) return next(new AppError(400, `Se requiere ${key}`));
 
-    const carreraId = await carreraIdFromAsignatura(asignaturaId);
-    if (!carreraId) return next(new AppError(404, 'Asignatura no encontrada'));
-
-    const scope = await prisma.adminScope.findFirst({
-      where: { userId: user.sub, carreraId, OR: [{ cursoId: null }] },
-    });
-    if (!scope) return next(new AppError(403, 'No tienes ámbito de administración sobre este recurso'));
+    const loc = await locationFromAsignatura(asignaturaId);
+    if (!loc) return next(new AppError(404, 'Asignatura no encontrada'));
+    if (!(await scopeCovers(user.sub, loc))) return next(new AppError(403, 'No tienes ámbito de administración sobre este recurso'));
     next();
   };
 }
@@ -163,13 +172,30 @@ export function requireScopeViaGrupo(key = 'id') {
     const grupoId = (req.params[key] ?? req.body[key] ?? req.query[key]) as string | undefined;
     if (!grupoId) return next(new AppError(400, `Se requiere ${key}`));
 
-    const carreraId = await carreraIdFromGrupo(grupoId);
-    if (!carreraId) return next(new AppError(404, 'Grupo no encontrado'));
+    const loc = await locationFromGrupo(grupoId);
+    if (!loc) return next(new AppError(404, 'Grupo no encontrado'));
+    if (!(await scopeCovers(user.sub, loc))) return next(new AppError(403, 'No tienes ámbito de administración sobre este recurso'));
+    next();
+  };
+}
 
-    const scope = await prisma.adminScope.findFirst({
-      where: { userId: user.sub, carreraId, OR: [{ cursoId: null }] },
-    });
-    if (!scope) return next(new AppError(403, 'No tienes ámbito de administración sobre este recurso'));
+/**
+ * Ámbito resuelto a partir del usuario objetivo (EP-C-28, bloqueo): su carrera
+ * y curso deben estar cubiertos por el ámbito del administrador.
+ */
+export function requireScopeViaUser(key = 'id') {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    const user = req.user;
+    if (!user) return next(new AppError(401, 'Autenticación requerida'));
+    if (user.role === Role.PROPIETARIO) return next();
+    if (user.role !== Role.EMBAJADOR) return next(new AppError(403, 'Solo los administradores pueden acceder'));
+    const targetId = (req.params[key] ?? req.body?.[key]) as string | undefined;
+    if (!targetId) return next(new AppError(400, `Se requiere ${key}`));
+    const target = await prisma.user.findFirst({ where: { id: targetId, deletedAt: null }, select: { carreraId: true, cursoId: true } });
+    if (!target) return next(new AppError(404, 'Usuario no encontrado'));
+    if (!target.carreraId || !target.cursoId || !(await scopeCovers(user.sub, { carreraId: target.carreraId, cursoId: target.cursoId }))) {
+      return next(new AppError(403, 'No tienes ámbito de administración sobre este usuario'));
+    }
     next();
   };
 }

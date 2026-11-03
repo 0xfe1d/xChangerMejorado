@@ -1,0 +1,13 @@
+{
+  "name": "xchanger-core-e2e",
+  "private": true,
+  "description": "Pruebas E2E de la API del core con Cypress (peticiones HTTP reales)",
+  "scripts": {
+    "cy:run": "cypress run",
+    "cy:open": "cypress open"
+  },
+  "devDependencies": {
+    "cypress": "^13.17.0",
+    "typescript": "^5.4.5"
+  }
+}

@@ -3,3 +3,8 @@ dist
 .env
 .env.*
 *.md
+test
+e2e
+docker-compose.test.yml
+jest.config.js
+tsconfig.test.json

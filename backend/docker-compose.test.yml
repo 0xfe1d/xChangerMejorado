@@ -1,0 +1,26 @@
+# Infraestructura efímera para tests de integración y E2E del core.
+# Puertos distintos de los de desarrollo para no colisionar.
+#   docker compose -f docker-compose.test.yml up -d
+services:
+  test-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: xtest
+      POSTGRES_PASSWORD: xtest
+      POSTGRES_DB: xchanger_test
+    ports: ["55432:5432"]
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xtest -d xchanger_test"]
+      interval: 2s
+      retries: 20
+  test-redis:
+    image: redis:7-alpine
+    ports: ["56379:6379"]
+  test-mail:
+    # Mailpit: SMTP en 1025, API HTTP en 8025 (E2E lee los OTP desde aquí)
+    image: axllent/mailpit:v1.21
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports: ["51025:1025", "58025:8025"]

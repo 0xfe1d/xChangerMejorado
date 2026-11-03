@@ -6,7 +6,40 @@ import * as adminRepo from '../repositories/admin.repository';
 import * as offerRepo from '../repositories/offer.repository';
 import { notifyMany } from './notification.service';
 import { logAction } from './log.service';
-import { emitToUser } from '../sockets/socket.server';
+import { publish, notifyEnqueued } from '../events/event-publisher';
+import { Prisma } from '@prisma/client';
+import { revokeAllChannelSessionsForUser } from './channel-session.service';
+
+type AcademicEntity = 'CARRERA' | 'CURSO' | 'ASIGNATURA' | 'GRUPO';
+
+/** Invalida cachés de clientes (el bot cachea catálogo y grupos, §6.8). */
+function academicChanged(entity: AcademicEntity, id: string, action: 'CREATED' | 'DELETED') {
+  publish('academic.changed', { entity, id, action }).catch(console.error);
+}
+
+/**
+ * RF-ACA-06 / RE-05: al confirmar la eliminación de un nodo con referencias,
+ * las ofertas OPEN o ACCEPTED bajo él se cancelan (CLOSED) y se anuncia el cambio.
+ */
+async function cancelOffersUnder(where: Prisma.OfferWhereInput): Promise<number> {
+  const offers = await prisma.offer.findMany({
+    where: { ...where, deletedAt: null, status: { in: ['OPEN', 'ACCEPTED'] } },
+    select: { id: true, status: true, userId: true, acceptedById: true, asignatura: { select: { codigo: true, nombre: true } } },
+  });
+  if (offers.length === 0) return 0;
+  await prisma.$transaction(async (tx) => {
+    await tx.offer.updateMany({ where: { id: { in: offers.map((o) => o.id) } }, data: { status: 'CLOSED' } });
+    for (const o of offers) {
+      await publish(
+        'offer.status.changed',
+        { offerId: o.id, from: o.status, to: 'CLOSED', actorId: null, reason: 'ENTITY_DELETED', asignatura: o.asignatura },
+        { audience: [o.userId, ...(o.acceptedById ? [o.acceptedById] : [])], tx },
+      );
+    }
+  });
+  notifyEnqueued();
+  return offers.length;
+}
 
 // ─────────────────────────────────────────────────────────────
 // CARRERAS
@@ -26,6 +59,7 @@ export async function createCarrera(nombre: string, requesterId: string) {
   await Promise.all(propietarios.map((p) => adminRepo.addAdminScope(p.id, carrera.id)));
 
   logAction({ userId: requesterId, action: 'CREATE_CARRERA', payload: { carreraId: carrera.id, nombre } }).catch(console.error);
+  academicChanged('CARRERA', carrera.id, 'CREATED');
   return carrera;
 }
 
@@ -41,14 +75,17 @@ export async function deleteCarrera(carreraId: string, requesterId: string) {
   const hasReferences = activeOffers > 0;
 
   await adminRepo.softDeleteCarrera(carreraId);
+  academicChanged('CARRERA', carreraId, 'DELETED');
 
+  let affected = 0;
+  let cancelledOffers = 0;
   if (hasReferences) {
-    const affected = await _notifyAffectedUsersByCarrera(carreraId, `La carrera "${carrera.nombre}" ha sido eliminada del sistema.`);
-    return { carrera, hasReferences, affectedUsers: affected };
+    cancelledOffers = await cancelOffersUnder({ asignatura: { curso: { carreraId } } });
+    affected = await _notifyAffectedUsersByCarrera(carreraId, `La carrera "${carrera.nombre}" ha sido eliminada del sistema. Las ofertas asociadas han sido canceladas.`);
   }
 
-  logAction({ userId: requesterId, action: 'DELETE_CARRERA', payload: { carreraId } }).catch(console.error);
-  return { carrera, hasReferences: false, affectedUsers: 0 };
+  logAction({ userId: requesterId, action: 'DELETE_CARRERA', payload: { carreraId, cancelledOffers } }).catch(console.error);
+  return { carrera, hasReferences, affectedUsers: affected };
 }
 
 export async function listCareers() {
@@ -68,6 +105,7 @@ export async function createCurso(carreraId: string, nombre: string, requesterId
 
   const curso = await adminRepo.createCurso(carreraId, nombre);
   logAction({ userId: requesterId, action: 'CREATE_CURSO', payload: { cursoId: curso.id, nombre, carreraId } }).catch(console.error);
+  academicChanged('CURSO', curso.id, 'CREATED');
   return curso;
 }
 
@@ -78,9 +116,9 @@ export async function deleteCurso(cursoId: string, requesterId: string) {
   const activeOffers = await adminRepo.countActiveOffersByCurso(cursoId);
   const hasReferences = activeOffers > 0;
 
-  await adminRepo.softDeleteCurso(cursoId);
-
+  // Se notifica antes de ocultar para poder localizar a los afectados por las ofertas
   let affectedCount = 0;
+  let cancelledOffers = 0;
   if (hasReferences) {
     affectedCount = await _notifyAffectedUsersByCurso(
       cursoId,
@@ -88,7 +126,11 @@ export async function deleteCurso(cursoId: string, requesterId: string) {
     );
   }
 
-  logAction({ userId: requesterId, action: 'DELETE_CURSO', payload: { cursoId } }).catch(console.error);
+  if (hasReferences) cancelledOffers = await cancelOffersUnder({ asignatura: { cursoId } });
+  await adminRepo.softDeleteCurso(cursoId);
+  academicChanged('CURSO', cursoId, 'DELETED');
+
+  logAction({ userId: requesterId, action: 'DELETE_CURSO', payload: { cursoId, cancelledOffers } }).catch(console.error);
   return { curso, hasReferences, affectedUsers: affectedCount };
 }
 
@@ -114,6 +156,7 @@ export async function createAsignatura(
 
   const asignatura = await adminRepo.createAsignatura(cursoId, nombre, codigo);
   logAction({ userId: requesterId, action: 'CREATE_ASIGNATURA', payload: { asignaturaId: asignatura.id, nombre, codigo, cursoId } }).catch(console.error);
+  academicChanged('ASIGNATURA', asignatura.id, 'CREATED');
   return asignatura;
 }
 
@@ -124,9 +167,9 @@ export async function deleteAsignatura(asignaturaId: string, requesterId: string
   const activeOffers = await adminRepo.countActiveOffersByAsignatura(asignaturaId);
   const hasReferences = activeOffers > 0;
 
-  await adminRepo.softDeleteAsignatura(asignaturaId);
-
+  // Se notifica antes de ocultar para poder localizar a los afectados por las ofertas
   let affectedCount = 0;
+  let cancelledOffers = 0;
   if (hasReferences) {
     affectedCount = await _notifyAffectedUsersByAsignatura(
       asignaturaId,
@@ -134,7 +177,11 @@ export async function deleteAsignatura(asignaturaId: string, requesterId: string
     );
   }
 
-  logAction({ userId: requesterId, action: 'DELETE_ASIGNATURA', payload: { asignaturaId } }).catch(console.error);
+  if (hasReferences) cancelledOffers = await cancelOffersUnder({ asignaturaId });
+  await adminRepo.softDeleteAsignatura(asignaturaId);
+  academicChanged('ASIGNATURA', asignaturaId, 'DELETED');
+
+  logAction({ userId: requesterId, action: 'DELETE_ASIGNATURA', payload: { asignaturaId, cancelledOffers } }).catch(console.error);
   return { asignatura, hasReferences, affectedUsers: affectedCount };
 }
 
@@ -155,6 +202,7 @@ export async function createGrupo(asignaturaId: string, nombre: string, requeste
 
   const grupo = await adminRepo.createGrupo(asignaturaId, nombre);
   logAction({ userId: requesterId, action: 'CREATE_GRUPO', payload: { grupoId: grupo.id, nombre, asignaturaId } }).catch(console.error);
+  academicChanged('GRUPO', grupo.id, 'CREATED');
   return grupo;
 }
 
@@ -165,9 +213,9 @@ export async function deleteGrupo(grupoId: string, requesterId: string) {
   const activeOffers = await adminRepo.countActiveOffersByGrupo(grupoId);
   const hasReferences = activeOffers > 0;
 
-  await adminRepo.softDeleteGrupo(grupoId);
-
+  // Se notifica antes de ocultar para poder localizar a los afectados por las ofertas
   let affectedCount = 0;
+  let cancelledOffers = 0;
   if (hasReferences) {
     affectedCount = await _notifyAffectedUsersByGrupo(
       grupoId,
@@ -175,7 +223,11 @@ export async function deleteGrupo(grupoId: string, requesterId: string) {
     );
   }
 
-  logAction({ userId: requesterId, action: 'DELETE_GRUPO', payload: { grupoId } }).catch(console.error);
+  if (hasReferences) cancelledOffers = await cancelOffersUnder({ OR: [{ grupoActualId: grupoId }, { grupoDeseadoId: grupoId }] });
+  await adminRepo.softDeleteGrupo(grupoId);
+  academicChanged('GRUPO', grupoId, 'DELETED');
+
+  logAction({ userId: requesterId, action: 'DELETE_GRUPO', payload: { grupoId, cancelledOffers } }).catch(console.error);
   return { grupo, hasReferences, affectedUsers: affectedCount };
 }
 
@@ -197,28 +249,32 @@ export async function blockUser(
   const target = await adminRepo.findUserByIdFull(targetId);
   if (!target) throw new AppError(404, 'Usuario no encontrado');
 
-  // EMBAJADOR no puede bloquear a otro EMBAJADOR ni a PROPIETARIO
+  // DV-02 / RF-BLQ-02: nadie se bloquea a sí mismo ni a un Propietario
+  if (targetId === requesterId) throw new AppError(403, 'No puedes bloquearte a ti mismo');
+  if (target.role === Role.PROPIETARIO) throw new AppError(403, 'No se puede bloquear a un Propietario');
+  // Un Embajador solo bloquea Estudiantes de su ámbito (AR-05)
   if (requesterRole === Role.EMBAJADOR && target.role !== Role.ESTUDIANTE) {
     throw new AppError(403, 'Un embajador solo puede bloquear estudiantes');
   }
+  await assertUserInScope(targetId, requesterId, requesterRole);
+  if (blockedUntil && blockedUntil <= new Date()) throw new AppError(400, 'La fecha de fin del bloqueo debe ser futura');
 
-  await prisma.user.update({
-    where: { id: targetId },
-    data: {
-      role: Role.BLOQUEADO,
-      blockedUntil,
-      blockReason: reason,
-      blockedById: requesterId,
-      // Revocar sesión
-      refreshTokenHash: null,
-    },
+  // Orden de Arquitectura §10.2: primero se revoca la capacidad de actuar
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: targetId },
+      data: { role: Role.BLOQUEADO, blockedUntil, blockReason: reason, blockedById: requesterId, refreshTokenHash: null },
+    });
+    await offerRepo.deactivateUserOffers(targetId, tx);
+    await publish(
+      'account.blocked',
+      { userId: targetId, permanent: blockedUntil === null, until: blockedUntil?.toISOString() ?? null, reason },
+      { audience: [targetId], tx },
+    );
   });
-
-  // Todas sus ofertas OPEN pasan a INACTIVE
-  await offerRepo.deactivateUserOffers(targetId);
-
-  // Emitir evento en tiempo real para que el cliente cierre la sesión
-  emitToUser(targetId, 'account_blocked', { reason, blockedUntil });
+  notifyEnqueued();
+  // RF-TGB-10: las sesiones de canal también se revocan
+  await revokeAllChannelSessionsForUser(targetId, 'BLOCKED');
 
   logAction({
     userId: requesterId,
@@ -242,6 +298,7 @@ export async function unblockUser(targetId: string, requesterId: string) {
     },
   });
 
+  publish('account.unblocked', { userId: targetId }, { audience: [targetId] }).catch(console.error);
   logAction({ userId: requesterId, action: 'UNBLOCK_USER', payload: { targetId } }).catch(console.error);
 }
 
@@ -299,7 +356,7 @@ export async function updateAdminScope(
  * Verifica que el usuario objetivo está dentro del ámbito del admin.
  * PROPIETARIO tiene acceso irrestricto.
  */
-async function assertUserInScope(
+export async function assertUserInScope(
   targetId: string,
   requesterId: string,
   requesterRole: Role,
@@ -420,8 +477,7 @@ async function _notifyAffectedUsersByCarrera(carreraId: string, message: string)
   });
   if (rows.length === 0) return 0;
   const recipients = rows.map((u) => ({ userId: u.id, email: u.email }));
-  await notifyMany(recipients, 'Aviso del sistema', message);
-  rows.forEach((u) => emitToUser(u.id, 'receive_notification', { type: 'system', message }));
+  await notifyMany(recipients, 'Aviso del sistema', message, { kind: 'ENTITY_DELETED' });
   return rows.length;
 }
 
@@ -432,8 +488,7 @@ async function _notifyAffectedUsersByCurso(cursoId: string, message: string): Pr
   });
   if (rows.length === 0) return 0;
   const recipients = rows.map((u) => ({ userId: u.id, email: u.email }));
-  await notifyMany(recipients, 'Aviso del sistema', message);
-  rows.forEach((u) => emitToUser(u.id, 'receive_notification', { type: 'system', message }));
+  await notifyMany(recipients, 'Aviso del sistema', message, { kind: 'ENTITY_DELETED' });
   return rows.length;
 }
 
@@ -445,8 +500,7 @@ async function _notifyAffectedUsersByAsignatura(asignaturaId: string, message: s
   const rows = enrolled.filter((e) => !e.user.deletedAt).map((e) => e.user);
   if (rows.length === 0) return 0;
   const recipients = rows.map((u) => ({ userId: u.id, email: u.email }));
-  await notifyMany(recipients, 'Aviso del sistema', message);
-  rows.forEach((u) => emitToUser(u.id, 'receive_notification', { type: 'system', message }));
+  await notifyMany(recipients, 'Aviso del sistema', message, { kind: 'ENTITY_DELETED' });
   return rows.length;
 }
 
@@ -472,7 +526,39 @@ async function _notifyAffectedUsersByGrupo(grupoId: string, message: string): Pr
   const rows = [...uniqueUsers.values()];
   if (rows.length === 0) return 0;
   const recipients = rows.map((u) => ({ userId: u.id, email: u.email }));
-  await notifyMany(recipients, 'Aviso del sistema', message);
-  rows.forEach((u) => emitToUser(u.id, 'receive_notification', { type: 'system', message }));
+  await notifyMany(recipients, 'Aviso del sistema', message, { kind: 'ENTITY_DELETED' });
   return rows.length;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Lecturas no administrativas del catálogo (AR-03, EP-C-14)
+// ─────────────────────────────────────────────────────────────
+
+const ACTIVE_ASIGNATURA = { deletedAt: null, curso: { deletedAt: null, carrera: { deletedAt: null } } } as const;
+
+/** EP-C-14: grupos de una asignatura sin pasar por /admin (RF-ACA-07). */
+export async function listGroupsForSubject(asignaturaId: string) {
+  const asignatura = await prisma.asignatura.findFirst({ where: { id: asignaturaId, ...ACTIVE_ASIGNATURA }, select: { id: true } });
+  if (!asignatura) throw new AppError(404, 'Asignatura no encontrada', 'NOT_FOUND');
+  return prisma.grupo.findMany({
+    where: { asignaturaId, deletedAt: null },
+    select: { id: true, nombre: true },
+    orderBy: { nombre: 'asc' },
+  });
+}
+
+/** Búsqueda pública de asignaturas (catálogo de registro y expediente). */
+export async function searchSubjectsPublic(q: string) {
+  return prisma.asignatura.findMany({
+    where: {
+      ...ACTIVE_ASIGNATURA,
+      ...(q ? { OR: [{ nombre: { contains: q, mode: 'insensitive' } }, { codigo: { contains: q, mode: 'insensitive' } }] } : {}),
+    },
+    include: {
+      grupos: { where: { deletedAt: null }, orderBy: { nombre: 'asc' } },
+      curso: { select: { id: true, nombre: true, carrera: { select: { nombre: true } } } },
+    },
+    orderBy: { nombre: 'asc' },
+    take: 20,
+  });
 }
