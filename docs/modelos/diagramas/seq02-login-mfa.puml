@@ -1,0 +1,48 @@
+@startuml seq02-login-mfa
+!include _estilo.iuml
+title DSI-02 Inicio de sesión web con segundo factor
+autonumber
+actor "Navegador" as N
+participant ":AuthController" as AC
+participant ":AuthService" as AS
+participant ":UserRepository" as UR
+participant ":MfaChallengeStore" as CS
+participant ":SecondFactor" as SF
+participant ":HttpMfaGateway" as G
+participant ":ServiceAuth" as SA
+participant "mfa-service" as MFA
+database "Redis" as R
+
+N -> AC : POST /auth/login {email, password}
+AC -> AS : login(datos)
+AS -> UR : findUserByEmail(email)
+AS -> AS : bcrypt.compare (hash ficticio si no existe)
+alt credenciales correctas y mfaActivo
+  AS -> CS : createChallenge(jti, userId)
+  CS -> R : SET mfa:chal:{jti} EX 300
+  AS --> AC : {kind: mfa, challengeToken}
+  AC --> N : 200 mfaRequired + cookie mfa_challenge (SameSite=Strict)
+end
+N -> AC : POST /auth/mfa/challenge {code}
+AC -> AS : completeMfaChallenge(token, code, ip)
+AS -> CS : getChallenge(jti)
+AS -> SF : verifySecondFactor(userId, code, login, jti)
+SF -> G : verify(...)
+G -> SA : signServiceToken(aud=mfa-service)
+G -> MFA : POST /v1/verify (timeout 2 s)
+alt circuito abierto o fallo de red
+  G --> SF : 503 MFA_SERVICE_UNAVAILABLE
+else respuesta
+  MFA --> G : {valid, matchedStep | reason}
+end
+alt inválido
+  AS -> CS : registerFailure(jti)
+  AS --> AC : 401 MFA_INVALID_CODE(intentosRestantes)
+else válido
+  AS -> CS : consumeChallenge(jti)
+  AS -> AS : comprobar bloqueo (liftExpiredBlock)
+  AS -> UR : guardar hash del refresh token
+  AS --> AC : tokens + avisos
+  AC --> N : 200 {user} + cookies de sesión
+end
+@enduml

@@ -1,0 +1,29 @@
+@startuml ssd01-registro
+!include _estilo.iuml
+title DSS-01 Registro con verificación OTP (UC-01, UC-02)
+actor "Visitante" as V
+participant ":xChanger" as S
+actor "Servidor SMTP" as M
+
+V -> S : consultarCarreras()
+S --> V : carreras
+V -> S : consultarCursos(carreraId)
+S --> V : cursos
+V -> S : registrar(nombre, email, contraseña, carreraId, cursoId)
+alt dominio no institucional
+  S --> V : error 400 INVALID_EMAIL_DOMAIN
+else email ya registrado
+  S --> V : error 409 EMAIL_TAKEN
+else datos válidos
+  S -> M : enviarOTP(email, código)
+  S --> V : 202 pendiente de verificación (reto de 30 min)
+  V -> S : verificarOTP(código)
+  alt código correcto y vigente
+    S --> V : 201 cuenta creada y sesión iniciada
+  else código incorrecto
+    S --> V : error 400 (máx. 5 intentos)
+  else reto caducado
+    S --> V : error 410 EXPIRED_TOKEN
+  end
+end
+@enduml

@@ -1,0 +1,83 @@
+@startuml dom02-identidad-seguridad
+!include _estilo.iuml
+title Modelo de dominio (2/3) — Identidad, sesiones, administración y auditoría
+
+class Usuario {
+  email : Email {unique}
+  nombre : String
+  rol : Rol
+  hashContraseña : Hash [0..1]
+  mfaActivo : Boolean = false
+  mfaActivoDesde : FechaHora [0..1]
+  bloqueadoHasta : FechaHora [0..1]
+  motivoBloqueo : String [0..1]
+}
+class Carrera
+class Curso
+class AmbitoAdministracion
+class RegistroPendiente {
+  email : Email {unique}
+  nombre : String
+  hashContraseña : Hash [0..1]
+  origen : OrigenRegistro
+  idUsuarioExterno : String [0..1]
+  hashOTP : Hash
+  jti : String {unique}
+  caducaEn : FechaHora
+}
+class SolicitudRecuperacion {
+  hashOTP : Hash
+  caducaEn : FechaHora
+}
+class HistorialAcceso {
+  ip : String
+  ubicacion : String
+  agenteUsuario : String
+  marcaTiempo : FechaHora
+}
+class Notificacion {
+  asunto : String
+  contenido : String
+  leida : Boolean = false
+  marcaTiempo : FechaHora
+}
+class PreferenciaNotificacion {
+  canal : CanalNotificacion
+  activa : Boolean
+  mensajesChat : Boolean
+}
+class EntradaLog <<inmutable>> {
+  accion : AccionLog
+  parametros : JSON
+  marcaTiempo : FechaHora
+}
+
+Usuario "1" *-left- "0..*" AmbitoAdministracion : ambito
+AmbitoAdministracion "0..*" -down-> "1" Carrera
+AmbitoAdministracion "0..*" -down-> "0..1" Curso
+Usuario "1" *-down- "0..*" HistorialAcceso
+Usuario "1" *-down- "0..1" SolicitudRecuperacion : solicitudActiva
+Usuario "1" *-down- "0..*" Notificacion
+Usuario "1" *-down- "0..*" PreferenciaNotificacion
+Usuario "1" -right- "0..*" EntradaLog : responsable
+Usuario "0..1" -- "0..*" Usuario : bloqueadoPor
+EntradaLog -[hidden]down- RegistroPendiente
+
+note top of AmbitoAdministracion
+  Curso vacío = toda la carrera (RF-ADM-02).
+  context Usuario inv ambitoSoloEmbajador:
+    self.ambito->notEmpty() implies
+      self.rol = Rol::EMBAJADOR or
+      self.rol = Rol::PROPIETARIO
+end note
+note top of Usuario
+  context Usuario inv bloqueoCoherente:
+    self.rol = Rol::BLOQUEADO implies self.motivoBloqueo->notEmpty()
+  -- bloqueadoHasta vacío con rol BLOQUEADO = bloqueo permanente
+end note
+note bottom of RegistroPendiente
+  Sin relación con Usuario: se vincula por email
+  y se elimina al verificar o caducar (RD-10).
+  hashContraseña vacío solo si origen = TELEGRAM.
+end note
+@enduml

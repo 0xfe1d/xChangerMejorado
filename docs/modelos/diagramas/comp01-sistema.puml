@@ -1,0 +1,73 @@
+@startuml comp01-sistema
+!include _estilo.iuml
+title Modelo de componentes (1/2) — Sistema y microservicios satélite
+skinparam componentStyle uml2
+left to right direction
+
+actor "Navegador" as NAV
+actor "Telegram Bot API" as TG
+actor "App autenticadora" as APP
+
+node "Borde" {
+  component "Nginx\n(proxy inverso, TLS)" as NGINX
+}
+component "Frontend\n(Astro SSR)" as FE
+component "Core\n(Express + Socket.io)" as CORE
+component "telegram-bot" as BOT <<microservicio>>
+component "mfa-service" as MFA <<microservicio>>
+database "PostgreSQL\ncore" as PG
+database "Redis" as RED
+database "BD bot" as BOTDB
+database "BD MFA" as MFADB
+component "Servidor SMTP" as SMTP <<externo>>
+
+interface "HTTPS público" as I_HTTP
+interface "API REST /api/v1" as I_REST
+interface "Socket.io" as I_WS
+interface "Autenticación\nde servicios" as I_SVC
+interface "JWKS interno" as I_JWKS
+interface "Webhook Telegram" as I_HOOK
+interface "API XOTP (EP-M)" as I_EPM
+interface "Claves XOTP\npúblicas" as I_KEYS
+interface "SQL" as I_SQL
+interface "Streams /\ncaché / límites" as I_RED
+interface "SMTP" as I_SMTP
+
+NGINX - I_HTTP
+CORE - I_REST
+CORE - I_WS
+CORE - I_SVC
+CORE - I_JWKS
+BOT - I_HOOK
+MFA - I_EPM
+MFA - I_KEYS
+PG - I_SQL
+RED - I_RED
+SMTP - I_SMTP
+
+NAV ..> I_HTTP : <<use>>
+TG ..> I_HTTP : <<use>>
+APP ..> I_KEYS : <<use>>\n(opcional)
+NGINX ..> I_REST : <<use>>
+NGINX ..> I_WS : <<use>>
+NGINX ..> I_HOOK : <<use>>
+NGINX ..> FE : <<delegate>>
+FE ..> I_REST : <<use>> (SSR)
+BOT ..> I_SVC : <<use>>
+BOT ..> I_REST : <<use>> (S+U)
+BOT ..> I_RED : <<use>> (consumidor)
+BOT ..> BOTDB : <<use>>
+CORE ..> I_SQL : <<use>>
+CORE ..> I_RED : <<use>> (productor)
+CORE ..> I_EPM : <<use>>
+CORE ..> I_SMTP : <<use>>
+MFA ..> I_JWKS : <<use>>
+MFA ..> MFADB : <<use>>
+MFA ..> I_RED : <<use>>
+
+note bottom of CORE
+  Única fuente de verdad: usuarios, ofertas,
+  permisos y log. Ningún microservicio accede
+  a la base de datos del core.
+end note
+@enduml

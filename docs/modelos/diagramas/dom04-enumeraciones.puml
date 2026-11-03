@@ -1,0 +1,48 @@
+@startuml dom04-enumeraciones
+!include _estilo.iuml
+title Modelo de dominio — Enumeraciones
+
+enum Rol {
+  ESTUDIANTE
+  EMBAJADOR
+  PROPIETARIO
+  BLOQUEADO
+}
+enum EstadoOferta {
+  OPEN
+  ACCEPTED
+  CLOSED
+  INACTIVE
+}
+enum EstadoTicket {
+  OPEN
+  CLOSED
+}
+enum Canal {
+  TELEGRAM
+}
+enum OrigenRegistro {
+  WEB
+  TELEGRAM
+}
+enum EstadoVinculacion {
+  PENDING
+  APPROVED
+  DENIED
+  CONSUMED
+  EXPIRED
+}
+enum TipoReto {
+  EMAIL_OTP
+  MFA
+}
+enum CanalNotificacion {
+  EMAIL
+  WEB
+  TELEGRAM
+}
+enum EstadoFactor {
+  PENDING
+  ACTIVE
+}
+@enduml

@@ -1,0 +1,30 @@
+@startuml seq05-refresco-canal
+!include _estilo.iuml
+title DSI-05 Refresco de sesión de canal con rotación y detección de reutilización
+autonumber
+participant "telegram-bot" as TB
+participant ":ChannelSessionService" as CSS
+database "PostgreSQL" as DB
+participant ":EventPublisher" as EP
+
+TB -> CSS : refresh(refreshToken, idExterno)
+CSS -> DB : SELECT sesión WHERE hash = sha256(token)
+alt no existe o de otra identidad
+  CSS --> TB : 400 INVALID_GRANT
+else revocada con motivo ROTATED
+  CSS -> DB : revocar toda la familia (REUSE_DETECTED)
+  CSS -> EP : channel.session.revoked ×N
+  CSS --> TB : 400 INVALID_GRANT
+else caducada
+  CSS --> TB : 410 EXPIRED_TOKEN
+else usuario bloqueado
+  CSS -> DB : revocar sesiones del usuario (BLOCKED)
+  CSS --> TB : 403 ACCOUNT_BLOCKED
+else válida
+  group transacción
+    CSS -> DB : UPDATE sesión SET revocada=ROTATED\nWHERE id=? AND revokedAt IS NULL
+    CSS -> DB : INSERT sesión nueva (misma familia y caducidad absoluta)
+  end
+  CSS --> TB : 200 tokens nuevos
+end
+@enduml

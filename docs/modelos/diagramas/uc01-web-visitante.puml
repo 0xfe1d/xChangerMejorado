@@ -1,0 +1,40 @@
+@startuml uc01-web-visitante
+!include _estilo.iuml
+left to right direction
+title Casos de uso — Interfaz web: visitante y acceso
+
+actor "Visitante" as V
+actor "Usuario registrado" as UR
+actor "Servidor SMTP" as SMTP <<sistema>>
+actor "mfa-service" as MFA <<sistema>>
+
+rectangle "xChanger" {
+  usecase "UC-01 Registrarse" as UC01
+  usecase "UC-02 Verificar correo con OTP" as UC02
+  usecase "UC-03 Consultar catálogo académico" as UC03
+  usecase "UC-04 Iniciar sesión" as UC04
+  usecase "UC-05 Completar segundo factor" as UC05
+  usecase "UC-06 Recuperar contraseña" as UC06
+  usecase "UC-07 Renovar sesión" as UC07
+}
+
+V -- UC01
+V -- UC03
+UR -- UC04
+UR -- UC06
+UR -- UC07
+
+UC01 .> UC02 : <<include>>
+UC01 .> UC03 : <<include>>
+UC05 .> UC04 : <<extend>>\n{cuenta con MFA activo}
+
+UC02 -- SMTP
+UC06 -- SMTP
+UC05 -- MFA
+
+note bottom of UC04
+  Respuesta genérica ante credenciales
+  incorrectas (RF-AUT-09). El estado de
+  bloqueo solo se revela tras ambos factores.
+end note
+@enduml

@@ -1,0 +1,28 @@
+@startuml ssd03-intercambio
+!include _estilo.iuml
+title DSS-03 Búsqueda, aceptación y chat de una oferta (UC-20..UC-25)
+actor "Estudiante B" as B
+participant ":xChanger" as S
+actor "Estudiante A" as A
+actor "Servidor SMTP" as M
+
+B -> S : buscarOfertas(asignatura, grupoActual, grupoDeseado)
+S --> B : ofertas complementarias
+opt sin resultados
+  B -> S : publicarOferta(asignatura, grupoActual, grupoDeseado)
+  S --> B : oferta OPEN
+end
+B -> S : aceptarOferta(ofertaId)
+alt oferta OPEN y B no es el creador
+  S --> B : oferta ACCEPTED + datos de contacto de A
+  S -->> A : aviso en tiempo real
+  S -> M : notificar a A y a B
+else ya aceptada por otro
+  S --> B : error 409 OFFER_NOT_OPEN
+end
+B -> S : enviarMensaje(ofertaId, texto)
+S --> B : mensaje persistido
+S -->> A : mensaje en tiempo real
+A -> S : cerrarOferta(ofertaId)
+S --> A : oferta CLOSED (chat en solo lectura)
+@enduml

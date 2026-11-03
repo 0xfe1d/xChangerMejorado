@@ -1,0 +1,75 @@
+@startuml uc02-web-estudiante
+!include _estilo.iuml
+left to right direction
+title Casos de uso — Interfaz web: estudiante
+
+actor "Estudiante" as E
+actor "Servidor SMTP" as SMTP <<sistema>>
+actor "mfa-service" as MFA <<sistema>>
+
+rectangle "xChanger" {
+  package "Perfil y expediente" {
+    usecase "UC-10 Editar perfil" as UC10
+    usecase "UC-11 Gestionar expediente" as UC11
+    usecase "UC-12 Cambiar contraseña" as UC12
+  }
+  package "Ofertas y chat" {
+    usecase "UC-20 Buscar ofertas complementarias" as UC20
+    usecase "UC-21 Publicar oferta" as UC21
+    usecase "UC-22 Aceptar oferta" as UC22
+    usecase "UC-23 Consultar mis ofertas" as UC23
+    usecase "UC-24 Cerrar oferta" as UC24
+    usecase "UC-25 Chatear con la contraparte" as UC25
+  }
+  package "Soporte y avisos" {
+    usecase "UC-30 Abrir ticket" as UC30
+    usecase "UC-31 Conversar en ticket" as UC31
+    usecase "UC-32 Cerrar ticket" as UC32
+    usecase "UC-33 Consultar notificaciones" as UC33
+    usecase "UC-34 Configurar preferencias\nde notificación" as UC34
+  }
+  package "Seguridad de la cuenta" {
+    usecase "UC-40 Activar MFA" as UC40
+    usecase "UC-41 Desactivar MFA" as UC41
+    usecase "UC-42 Regenerar códigos\nde recuperación" as UC42
+    usecase "UC-43 Reautenticarse" as UC43
+    usecase "UC-44 Aprobar vinculación\nde Telegram" as UC44
+    usecase "UC-45 Gestionar canales vinculados" as UC45
+    usecase "UC-46 Cerrar sesión" as UC46
+  }
+}
+
+E -- UC10
+E -- UC11
+E -- UC12
+E -- UC20
+E -- UC22
+E -- UC23
+E -- UC24
+E -- UC25
+E -- UC30
+E -- UC31
+E -- UC32
+E -- UC33
+E -- UC34
+E -- UC40
+E -- UC41
+E -- UC42
+E -- UC44
+E -- UC45
+E -- UC46
+
+UC21 .> UC20 : <<extend>>\n{sin resultados}
+UC40 .> UC43 : <<include>>
+UC43 .> UC44 : <<extend>>\n{sesión de más de 15 min}
+
+UC22 -- SMTP
+UC40 -- MFA
+UC41 -- MFA
+UC42 -- MFA
+
+note right of UC22
+  Precondición: expediente con al
+  menos una asignatura (RF-PER-03).
+end note
+@enduml

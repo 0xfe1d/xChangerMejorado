@@ -1,0 +1,90 @@
+@startuml dom03-canales-eventos
+!include _estilo.iuml
+title Modelo de dominio (3/3) — Canales externos, segundo factor y eventos
+
+class Usuario {
+  mfaActivo : Boolean
+}
+class IdentidadCanal {
+  canal : Canal
+  idUsuarioExterno : String
+  nombreVisible : String
+  vinculadaEn : FechaHora
+  revocadaEn : FechaHora [0..1]
+}
+class SesionCanal {
+  hashTokenRefresco : Hash {unique}
+  familia : Identificador
+  ultimoUso : FechaHora
+  caducaEn : FechaHora
+  caducidadAbsoluta : FechaHora
+  revocadaEn : FechaHora [0..1]
+  motivoRevocacion : String [0..1]
+}
+class SolicitudVinculacion {
+  hashCodigoDispositivo : Hash {unique}
+  codigoUsuario : String
+  canal : Canal
+  idUsuarioExterno : String
+  nombreVisible : String
+  estado : EstadoVinculacion
+  caducaEn : FechaHora
+  ultimoSondeo : FechaHora [0..1]
+}
+class RetoLoginCanal {
+  jti : String {unique}
+  tipo : TipoReto
+  canal : Canal
+  idUsuarioExterno : String
+  hashOTP : Hash [0..1]
+  intentos : Entero = 0
+  caducaEn : FechaHora
+  consumidoEn : FechaHora [0..1]
+}
+class EventoOutbox {
+  id : ULID
+  tipo : TipoEvento
+  sobre : JSON
+  publicadoEn : FechaHora [0..1]
+  intentos : Entero
+}
+
+package "Custodiado por mfa-service (fuera del core)" <<Frame>> {
+  class FactorXOTP {
+    estado : EstadoFactor
+    secretoCifrado : Bytes
+    ultimoPasoUsado : Entero
+  }
+  class CodigoRecuperacion {
+    hash : Hash
+    usado : Boolean
+  }
+  FactorXOTP "1" *-- "10" CodigoRecuperacion
+}
+
+Usuario "1" *-- "0..*" IdentidadCanal
+IdentidadCanal "1" *-- "0..*" SesionCanal
+SolicitudVinculacion "0..*" --> "0..1" Usuario : aprobadaPor >
+RetoLoginCanal "0..*" --> "0..1" Usuario : para >
+Usuario "1" .. "0..1" FactorXOTP : subjectId
+
+note right of IdentidadCanal
+  context IdentidadCanal inv unicaActiva:
+    IdentidadCanal.allInstances()->select(i |
+      i.revocadaEn->isEmpty() and i.canal = self.canal and
+      i.idUsuarioExterno = self.idUsuarioExterno)->size() <= 1
+  -- y como mucho una activa por (usuario, canal)
+end note
+note bottom of RetoLoginCanal
+  Usuario vacío si el email no existe
+  (anti-enumeración). intentos <= 5.
+end note
+note bottom of SesionCanal
+  Cada rotación crea una sesión nueva de la misma
+  familia; reutilizar una rotada revoca la familia.
+end note
+note bottom of EventoOutbox
+  Sin asociaciones: el sobre lleva la audiencia
+  (lista de identificadores de usuario).
+end note
+@enduml

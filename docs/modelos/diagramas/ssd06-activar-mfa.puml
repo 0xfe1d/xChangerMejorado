@@ -1,0 +1,23 @@
+@startuml ssd06-activar-mfa
+!include _estilo.iuml
+title DSS-06 Activación del segundo factor (UC-40)
+actor "Estudiante" as E
+participant ":xChanger" as S
+actor "App autenticadora" as APP
+
+E -> S : reautenticarse(contraseña)
+S --> E : 200 (válida 10 min)
+E -> S : iniciarActivacion()
+S --> E : QR XOTP firmado + secreto manual (no-store, caduca en 10 min)
+E -> APP : escanear QR
+APP --> E : código de 6 dígitos (cada 30 s)
+note right of APP : Sin conexión con el sistema
+E -> S : confirmar(enrolamientoId, código)
+alt código válido
+  S --> E : 200 MFA activo + 10 códigos de recuperación (una sola vez)
+else inválido
+  S --> E : error 401 MFA_INVALID_CODE
+else caducado
+  S --> E : error 410 ENROLLMENT_EXPIRED
+end
+@enduml

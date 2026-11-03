@@ -1,0 +1,60 @@
+@startuml uc04-telegram
+!include _estilo.iuml
+left to right direction
+title Casos de uso — Interfaz Telegram (bot)
+
+actor "Usuario de Telegram\nno vinculado" as TU
+actor "Estudiante\n(vía Telegram)" as TE
+actor "Servidor SMTP" as SMTP <<sistema>>
+actor "mfa-service" as MFA <<sistema>>
+TU <|-- TE
+
+rectangle "xChanger" {
+  package "Identidad de canal" {
+    usecase "UC-80 Vincular cuenta existente" as UC80
+    usecase "UC-44 Aprobar vinculación\n(desde la web)" as UC44
+    usecase "UC-81 Entrar con OTP de correo" as UC81
+    usecase "UC-82 Verificar segundo factor" as UC82
+    usecase "UC-83 Registrarse desde el chat" as UC83
+    usecase "UC-84 Desvincular el bot" as UC84
+  }
+  package "Operación" {
+    usecase "UC-85 Consultar perfil y estado MFA" as UC85
+    usecase "UC-86 Gestionar expediente" as UC86
+    usecase "UC-87 Buscar ofertas complementarias" as UC87
+    usecase "UC-88 Publicar oferta" as UC88
+    usecase "UC-89 Aceptar oferta" as UC89
+    usecase "UC-90 Consultar y cerrar mis ofertas" as UC90
+    usecase "UC-91 Enviar mensaje de chat" as UC91
+    usecase "UC-92 Recibir notificaciones" as UC92
+    usecase "UC-93 Configurar avisos por Telegram" as UC93
+  }
+}
+
+TU -- UC80
+TU -- UC81
+TU -- UC83
+TE -- UC84
+TE -- UC85
+TE -- UC86
+TE -- UC87
+TE -- UC89
+TE -- UC90
+TE -- UC91
+TE -- UC92
+TE -- UC93
+
+UC80 .> UC44 : <<include>>
+UC82 .> UC81 : <<extend>>\n{cuenta con MFA activo}
+UC88 .> UC87 : <<extend>>\n{sin resultados}
+
+UC81 -- SMTP
+UC83 -- SMTP
+UC82 -- MFA
+
+note bottom of UC80
+  La contraseña nunca se introduce en Telegram
+  (ADR-19). El chat no ofrece funciones de
+  administración (RF-TGB-11).
+end note
+@enduml

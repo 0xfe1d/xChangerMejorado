@@ -1,0 +1,14 @@
+@startuml st01-oferta
+!include _estilo.iuml
+title Máquina de estados de Oferta (RE-01..RE-05)
+[*] --> OPEN : crear [grupos válidos y expediente no vacío]
+OPEN --> ACCEPTED : aceptar(u) [u <> creador] / notificar a ambas partes
+OPEN --> INACTIVE : bloqueo del creador
+OPEN --> CLOSED : cerrar [creador o administrador]
+ACCEPTED --> CLOSED : cerrar [creador, aceptante o administrador]
+OPEN --> CLOSED : eliminar entidad padre / notificar
+ACCEPTED --> CLOSED : eliminar entidad padre / notificar
+CLOSED --> [*]
+state ACCEPTED : entry / habilitar chat
+state CLOSED : entry / chat en solo lectura
+@enduml

@@ -1,0 +1,23 @@
+skinparam dpi 170
+skinparam shadowing false
+skinparam defaultFontName "DejaVu Sans"
+skinparam defaultFontSize 12
+skinparam ArrowColor #333333
+skinparam ActorBorderColor #8B1E3F
+skinparam UsecaseBorderColor #8B1E3F
+skinparam UsecaseBackgroundColor #FBF7F8
+skinparam RectangleBorderColor #555555
+skinparam PackageBorderColor #777777
+skinparam ClassBorderColor #8B1E3F
+skinparam ClassBackgroundColor #FFFFFF
+skinparam ClassHeaderBackgroundColor #F4E9EC
+skinparam ComponentBorderColor #8B1E3F
+skinparam ComponentBackgroundColor #FBF7F8
+skinparam InterfaceBorderColor #8B1E3F
+skinparam SequenceParticipantBorderColor #8B1E3F
+skinparam SequenceParticipantBackgroundColor #FBF7F8
+skinparam SequenceLifeLineBorderColor #999999
+skinparam SequenceGroupBorderColor #777777
+skinparam NoteBackgroundColor #FFFBE6
+skinparam NoteBorderColor #C9B458
+hide circle

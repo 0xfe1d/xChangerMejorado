@@ -1,0 +1,23 @@
+@startuml ssd05-vinculacion
+!include _estilo.iuml
+title DSS-05 Vinculación de Telegram por código de dispositivo (UC-80, UC-44)
+actor "Estudiante" as E
+participant ":xChanger" as S
+
+E -> S : /vincular (desde Telegram)
+S --> E : código ABCD-2345 + enlace de aprobación
+E -> S : abrirEnlace(código) (desde el navegador)
+alt sesión web de más de 15 min
+  S --> E : error 401 REAUTH_REQUIRED
+  E -> S : reautenticarse(contraseña [, códigoXOTP])
+  S --> E : 200 identidad verificada
+end
+S --> E : nombre visible de Telegram y hora de la solicitud
+E -> S : decidir(código, aprobar)
+alt identidad de Telegram ya vinculada a otra cuenta
+  S --> E : error 409 CHANNEL_IDENTITY_TAKEN
+else aprobada
+  S --> E : 200 APPROVED (y aviso por correo)
+  S --> E : "Vinculado como Ana P." (en Telegram)
+end
+@enduml

@@ -1,0 +1,47 @@
+@startuml uc05-api-servicios
+!include _estilo.iuml
+left to right direction
+title Casos de uso — Interfaz de servicios (API máquina a máquina)
+
+actor "telegram-bot" as BOT <<sistema>>
+actor "mfa-service" as MFA <<sistema>>
+actor "Orquestador\n(Docker / monitor)" as ORQ <<sistema>>
+
+rectangle "Core de xChanger" {
+  usecase "UC-100 Obtener credencial de servicio" as UC100
+  usecase "UC-101 Iniciar vinculación de dispositivo" as UC101
+  usecase "UC-102 Canjear concesión de sesión" as UC102
+  usecase "UC-103 Solicitar OTP de inicio de sesión" as UC103
+  usecase "UC-104 Registrar usuario desde canal" as UC104
+  usecase "UC-105 Operar en nombre del usuario" as UC105
+  usecase "UC-106 Revocar sesión de canal" as UC106
+  usecase "UC-107 Suscribirse a eventos de dominio" as UC107
+  usecase "UC-108 Publicar claves públicas (JWKS)" as UC108
+  usecase "UC-109 Consultar salud" as UC109
+}
+
+BOT -- UC100
+BOT -- UC101
+BOT -- UC102
+BOT -- UC103
+BOT -- UC104
+BOT -- UC105
+BOT -- UC106
+BOT -- UC107
+MFA -- UC108
+ORQ -- UC109
+
+UC101 .> UC100 : <<include>>
+UC102 .> UC100 : <<include>>
+UC105 .> UC102 : <<include>>
+
+note right of UC105
+  Exige X-Service-Authorization (scope
+  channel:telegram) y Bearer de canal.
+  Solo rutas en la lista blanca (ADR-21).
+end note
+note right of UC107
+  Redis Streams, grupo propio;
+  entrega al menos una vez (§11).
+end note
+@enduml

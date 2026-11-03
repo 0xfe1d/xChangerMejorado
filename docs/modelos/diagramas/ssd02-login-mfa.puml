@@ -1,0 +1,30 @@
+@startuml ssd02-login-mfa
+!include _estilo.iuml
+title DSS-02 Inicio de sesión web con segundo factor (UC-04, UC-05)
+actor "Usuario registrado" as U
+participant ":xChanger" as S
+actor "mfa-service" as MFA
+
+U -> S : iniciarSesion(email, contraseña)
+alt credenciales incorrectas
+  S --> U : error 401 (respuesta genérica)
+else cuenta sin MFA
+  S --> U : 200 sesión iniciada | 403 ACCOUNT_BLOCKED
+else cuenta con MFA
+  S --> U : 200 mfaRequired (reto de 5 min, sin sesión)
+  loop hasta 5 intentos
+    U -> S : completarReto(código | códigoRecuperación)
+    S -> MFA : verificar(sujeto, código, correlación)
+    MFA --> S : válido | inválido(motivo, intentosRestantes)
+    alt válido y cuenta activa
+      S --> U : 200 sesión iniciada [+ avisos]
+    else válido y cuenta bloqueada
+      S --> U : error 403 ACCOUNT_BLOCKED
+    else inválido
+      S --> U : error 401 MFA_INVALID_CODE(intentosRestantes)
+    else mfa-service no disponible
+      S --> U : error 503 MFA_SERVICE_UNAVAILABLE
+    end
+  end
+end
+@enduml

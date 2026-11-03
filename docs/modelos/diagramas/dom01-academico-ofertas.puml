@@ -1,0 +1,91 @@
+@startuml dom01-academico-ofertas
+!include _estilo.iuml
+title Modelo de dominio (1/3) — Estructura académica, expediente, ofertas y mensajería
+skinparam linetype polyline
+skinparam nodesep 70
+skinparam ranksep 90
+
+class Carrera {
+  nombre : String {unique}
+  eliminadaEn : FechaHora [0..1]
+}
+class Curso {
+  nombre : String
+  eliminadoEn : FechaHora [0..1]
+}
+class Asignatura {
+  codigo : String {unique}
+  nombre : String
+  eliminadaEn : FechaHora [0..1]
+}
+class Grupo {
+  nombre : String
+  eliminadoEn : FechaHora [0..1]
+}
+class Usuario {
+  email : Email {unique, readOnly}
+  nombre : String
+  rol : Rol
+}
+class Oferta {
+  estado : EstadoOferta
+  creadaEn : FechaHora
+}
+class Ticket {
+  asunto : String
+  estado : EstadoTicket
+  creadoEn : FechaHora
+}
+class Mensaje {
+  contenido : String
+  marcaTiempo : FechaHora {readOnly}
+}
+
+Carrera "1" *-- "0..*" Curso : contiene >
+Curso "1" *-- "0..*" Asignatura : contiene >
+Asignatura "1" *-- "0..*" Grupo : contiene >
+
+Usuario "0..*" --> "0..1" Carrera : estudia >
+Usuario "0..*" --> "0..1" Curso : cursa >
+Usuario "0..*" -- "0..*" Asignatura : expediente
+
+Usuario "1" -- "0..*" Oferta : creador
+Usuario "0..1" -- "0..*" Oferta : aceptante
+Oferta "0..*" --> "1" Asignatura : sobre >
+Oferta "0..*" --> "1" Grupo : grupoActual >
+Oferta "0..*" --> "1" Grupo : grupoDeseado >
+
+Usuario "1" -- "0..*" Ticket : creador
+Usuario "0..1" -- "0..*" Ticket : administradorAsignado
+
+Oferta "0..1" *-- "0..*" Mensaje : chat >
+Ticket "0..1" *-- "0..*" Mensaje : chat >
+Mensaje "0..*" --> "1" Usuario : autor >
+
+note bottom of Mensaje
+  context Mensaje inv unSoloPadre:
+    self.oferta->size() + self.ticket->size() = 1
+  context Mensaje inv longitud:
+    self.contenido.trim().size() >= 1 and
+    self.contenido.size() <= 2000
+end note
+note right of Oferta
+  context Oferta inv gruposDeLaAsignatura:
+    self.grupoActual.asignatura = self.asignatura and
+    self.grupoDeseado.asignatura = self.asignatura and
+    self.grupoActual <> self.grupoDeseado
+  context Oferta inv aceptanteDistinto:
+    self.aceptante->notEmpty() implies
+      self.aceptante <> self.creador
+  context Oferta inv chatSoloAceptada:
+    self.mensaje->notEmpty() implies
+      self.estado <> EstadoOferta::OPEN
+end note
+note top of Curso
+  Unicidades (RF-ACA-01):
+  nombre de Curso único en su Carrera;
+  nombre de Grupo único en su Asignatura.
+  El borrado es lógico y oculta a los
+  descendientes por exclusión transitiva.
+end note
+@enduml

@@ -1,0 +1,57 @@
+@startuml seq01-aceptar-oferta
+!include _estilo.iuml
+title DSI-01 Aceptación de una oferta (atómica) y difusión por el bus de eventos
+autonumber
+actor "Estudiante B" as B
+participant ":Rutas y controladores" as C
+participant ":Autenticación" as AU
+participant ":Idempotencia" as ID
+participant ":OfferService" as OS
+participant ":OfferRepository" as OR
+participant ":EventPublisher" as EP
+database "PostgreSQL" as DB
+participant ":OutboxRelay" as RL
+database "Redis Streams" as RS
+participant ":socket-gateway" as SG
+participant ":email-sender" as ES
+participant "telegram-bot" as TB
+
+B -> C : POST /offers/{id}/accept
+C -> AU : authenticate(req)
+AU -> DB : leer usuario (rol, bloqueo)
+AU --> C : principal
+C -> ID : comprobar Idempotency-Key (si llega)
+C -> OS : acceptOffer(id, B)
+OS -> OR : findById(id)
+OS -> OS : validar OWN_OFFER, OPEN, expediente
+group transacción
+  OS -> OR : acceptIfOpen(id, B)
+  OR -> DB : UPDATE offers SET status=ACCEPTED\nWHERE id=? AND status=OPEN AND user_id<>B
+  DB --> OR : filas afectadas
+  alt 0 filas
+    OS --> C : 409 OFFER_NOT_OPEN
+  else 1 fila
+    OS -> EP : publish(offer.status.changed, tx)
+    EP -> DB : INSERT outbox
+  end
+end
+OS -> EP : notification.created ×2 (con su notificación)
+OS --> C : oferta ACCEPTED
+C --> B : 200
+EP ->> RL : aviso de evento encolado
+RL -> RS : SET lock NX
+RL -> DB : SELECT outbox pendientes ORDER BY id
+RL -> RS : XADD xchanger:events
+RL -> DB : marcar publicado
+par consumidores independientes
+  RS -> SG : XREADGROUP socket-gateway
+  SG ->> SG : emitir a salas user: y offer:
+  note right of SG : offer_accepted, receive_notification
+else
+  RS -> ES : XREADGROUP email-sender
+  ES -> ES : construir HTML escapado
+  ES ->> ES : enviar correo (reintenta si falla)
+else
+  RS -> TB : XREADGROUP telegram-bot
+end
+@enduml

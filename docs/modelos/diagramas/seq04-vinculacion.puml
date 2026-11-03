@@ -1,0 +1,37 @@
+@startuml seq04-vinculacion
+!include _estilo.iuml
+title DSI-04 Vinculación por autorización de dispositivo
+autonumber
+participant "telegram-bot" as TB
+actor "Navegador" as N
+participant ":ChannelController" as CC
+participant ":ChannelAuthService" as CA
+participant ":ChannelSessionService" as CSS
+participant ":EventPublisher" as EP
+database "PostgreSQL" as DB
+
+TB -> CC : POST /channel-auth/link-requests (S)
+CC -> CA : createLinkRequest(...)
+CA -> DB : INSERT solicitud (hash del deviceCode, userCode, 10 min)
+CC --> TB : 201 {deviceCode, userCode, verificationUri, interval}
+loop cada interval s mientras PENDING
+  TB -> CC : POST /channel-auth/token grant link_code
+  CC --> TB : 400 AUTHORIZATION_PENDING | SLOW_DOWN
+end
+N -> CC : POST /channel-links/{userCode}/decision (W, sesión reciente)
+CC -> CA : decideLinkRequest(código, approve, usuario)
+group transacción
+  CA -> DB : UPDATE solicitud SET APPROVED WHERE PENDING
+  CA -> CSS : ensureIdentity(usuario, canal, idExterno)
+  CSS -> DB : revocar identidad previa del usuario; crear identidad
+  CA -> EP : publish(channel.link.approved, tx)
+end
+CC --> N : 200 APPROVED
+EP ->> TB : evento channel.link.approved (vía Redis Streams)
+TB -> CC : POST /channel-auth/token grant link_code
+CC -> CA : grantLinkCode
+CA -> DB : UPDATE solicitud SET CONSUMED WHERE APPROVED
+CA -> CSS : issueSessionForIdentity(identidad)
+CSS -> DB : INSERT ChannelSession (hash SHA-256 del refresh)
+CC --> TB : 200 {accessToken, refreshToken, user}
+@enduml

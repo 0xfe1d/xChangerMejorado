@@ -1,0 +1,29 @@
+@startuml seq06-bloqueo
+!include _estilo.iuml
+title DSI-06 Bloqueo de usuario: revocación antes de informar (Arquitectura §10.2)
+autonumber
+actor "Embajador" as E
+participant ":AdminController" as AC
+participant ":AdminService" as AS
+database "PostgreSQL" as DB
+participant ":ChannelSessionService" as CSS
+participant ":EventPublisher" as EP
+participant ":socket-gateway" as SG
+participant "telegram-bot" as TB
+
+E -> AC : POST /admin/users/block {targetId, reason, blockedUntil?}
+AC -> AS : blockUser(...)
+AS -> AS : validar: no a sí mismo, no Propietario,\nEmbajador solo a Estudiantes, ámbito
+group transacción
+  AS -> DB : rol=BLOQUEADO, motivo, fin, refreshTokenHash=NULL
+  AS -> DB : ofertas OPEN → INACTIVE
+  AS -> EP : publish(account.blocked, tx)
+end
+AS -> CSS : revokeAllChannelSessionsForUser(BLOCKED)
+CSS -> EP : channel.session.revoked ×N
+AS -> DB : log BLOCK_USER
+AC --> E : 200
+EP ->> SG : account.blocked
+SG ->> SG : emitir account_blocked y desconectar sockets
+EP ->> TB : account.blocked / channel.session.revoked
+@enduml

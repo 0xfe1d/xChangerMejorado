@@ -1,0 +1,22 @@
+@startuml ssd04-bloqueo
+!include _estilo.iuml
+title DSS-04 Bloqueo de un usuario (UC-57)
+actor "Embajador" as E
+participant ":xChanger" as S
+actor "Estudiante bloqueado" as X
+
+E -> S : buscarUsuarios(texto)
+S --> E : usuarios de su ámbito (máx. 20)
+E -> S : bloquear(usuarioId, motivo, [hasta])
+alt fuera de ámbito, Propietario o sí mismo
+  S --> E : error 403
+else permitido
+  S --> E : 200 usuario bloqueado
+  S -->> X : account_blocked (cierre de sesión)
+  X -> S : cualquier petición (web o Telegram)
+  S --> X : error 403 ACCOUNT_BLOCKED | 401 sesión de canal revocada
+end
+... al vencer el plazo ...
+X -> S : iniciarSesion(email, contraseña)
+S --> X : 200 sesión iniciada (rol restaurado)
+@enduml

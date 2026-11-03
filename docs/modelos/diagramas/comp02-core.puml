@@ -1,0 +1,81 @@
+@startuml comp02-core
+!include _estilo.iuml
+title Modelo de componentes (2/2) — Estructura interna del core
+skinparam componentStyle uml2
+top to bottom direction
+
+interface "API REST" as I_REST
+interface "Socket.io" as I_WS
+
+component "Core" as CORE {
+  component "Rutas y controladores\n(validación Zod)" as HTTP
+  component "Pasarela Socket.io\n(adaptador Redis)" as SOCK
+
+  interface "CredentialExtractor" as I_EXT
+  component "Autenticación\n(cadena de extractores)" as AUTH
+  component "Políticas\n(allowClients, rateLimit,\nidempotency, requireScope*)" as POL
+
+  component "Servicios de dominio\n(auth, oferta, ticket, admin,\nnotificación, expediente)" as SVC
+  component "Identidad de canal\n(channel-auth,\nchannel-session)" as CH
+  component "Segundo factor\n(mfa.service,\nsecond-factor)" as MFAS
+  component "Autenticación de servicios\n(ES256 + JWKS)" as SA
+
+  interface "Repositorio" as I_REPO
+  interface "EventPublisher" as I_EVP
+  interface "MfaGateway" as I_MFAG
+  component "Repositorios\n(Prisma)" as REPO
+  component "EventPublisher\n+ Outbox" as EVP
+  component "HttpMfaGateway\n(timeout +\ncircuit breaker)" as MFAC
+
+  component "OutboxRelay\n(lock en Redis)" as RELAY
+  component "Consumidores\n(socket-gateway,\nemail-sender)" as CONS
+}
+
+interface "SQL" as I_SQL
+interface "Redis\n(Streams, límites)" as I_RED
+interface "API XOTP (EP-M)" as I_EPM
+interface "SMTP" as I_SMTP
+
+I_REST -down- CORE
+I_WS -down- CORE
+HTTP .up.> I_REST : <<delegate>>
+SOCK .up.> I_WS : <<delegate>>
+
+AUTH -up- I_EXT
+HTTP .down.> I_EXT : <<use>>
+HTTP .down.> POL : <<use>>
+HTTP .down.> SVC : <<use>>
+HTTP .down.> CH : <<use>>
+HTTP .down.> MFAS : <<use>>
+AUTH .down.> SA : <<use>>
+
+REPO -up- I_REPO
+EVP -up- I_EVP
+MFAC -up- I_MFAG
+SVC .down.> I_REPO : <<use>>
+SVC .down.> I_EVP : <<use>>
+CH .down.> I_REPO : <<use>>
+CH .down.> I_EVP : <<use>>
+CH .right.> MFAS : <<use>>
+MFAS .down.> I_MFAG : <<use>>
+MFAC .up.> SA : <<use>>
+
+RELAY .right.> CONS : <<trigger>>
+CONS .up.> SOCK : <<use>>
+EVP .down.> RELAY : <<trigger>>
+
+REPO .down.> I_SQL : <<use>>
+EVP .down.> I_SQL : <<use>>
+RELAY .down.> I_RED : <<use>>
+CONS .down.> I_RED : <<use>>
+POL .down.> I_RED : <<use>>
+MFAC .down.> I_EPM : <<use>>
+CONS .down.> I_SMTP : <<use>>
+
+note right of SVC
+  Cada capa solo usa la inferior; los
+  servicios no conocen HTTP ni Socket.io
+  (RNF-06, AR-04). El evento se inserta en
+  el outbox en la misma transacción.
+end note
+@enduml

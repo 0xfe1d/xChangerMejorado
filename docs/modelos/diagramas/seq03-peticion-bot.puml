@@ -1,0 +1,42 @@
+@startuml seq03-peticion-bot
+!include _estilo.iuml
+title DSI-03 Petición del bot en nombre del usuario (S+U) con idempotencia
+autonumber
+participant "telegram-bot" as TB
+participant ":Rutas" as RT
+participant ":allowClients" as AL
+participant ":authenticate" as AU
+participant ":ServiceChannelExtractor" as EX
+participant ":ServiceAuth" as SA
+database "PostgreSQL" as DB
+participant ":idempotency" as ID
+database "Redis" as R
+participant ":OfferService" as OS
+
+TB -> RT : POST /api/v1/offers\nX-Service-Authorization, Authorization,\nIdempotency-Key: tg:<update_id>
+RT -> AL : allowClients(web, channel)
+AL -> AU : next()
+AU -> AU : ¿cookie y cabecera de servicio? → 400 AMBIGUOUS_CREDENTIALS
+AU -> EX : extract(req)
+EX -> SA : verifyServiceToken(scope channel:telegram)
+EX -> EX : verificar Bearer de canal (typ, ch, exp)
+EX -> DB : leer ChannelSession (revocada, caducidad, identidad)
+EX --> AU : principal {client: channel}
+AU -> AU : ¿canal permitido en la ruta? → 403 CHANNEL_FORBIDDEN_ROUTE
+AU -> DB : leer usuario (rol, bloqueo)
+AU -> ID : next()
+ID -> R : SET idem:{svc}:{user}:{key} pending NX EX 86400
+alt clave ya usada
+  ID -> R : GET
+  alt otro cuerpo
+    ID --> TB : 422 IDEMPOTENCY_CONFLICT
+  else misma petición completada
+    ID --> TB : respuesta memorizada (Idempotent-Replayed)
+  end
+else nueva
+  ID -> OS : create(...)
+  OS --> ID : oferta
+  ID -> R : SET done(estado, cuerpo)
+  ID --> TB : 201 oferta
+end
+@enduml
