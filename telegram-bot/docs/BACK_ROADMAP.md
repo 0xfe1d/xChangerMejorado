@@ -14,7 +14,7 @@ Detalle de lo ya implementado: [BACK_PROGRESS.md](./BACK_PROGRESS.md)
   - `ServiceAuthManager` (`EP-C-01`, renovación automática cuando quedan `< 60 s`) y `ChannelSessionManager` (`accessToken` en Redis + rotación de `refreshToken` en `bot-db` con lock distribuido).
 - [x] **Bloque 3 — `HttpCoreClient` (REST `/api/v1` + Caché)**
   - Transporte HTTP base (`X-Service-Authorization`, `Authorization`, `X-Request-Id`, `Idempotency-Key`, `CoreApiError`, reintento único ante `401 TOKEN_EXPIRED`), los 31 métodos de `CoreClient` y caché de catálogo (TTL 5 min).
-- [ ] **Bloque 4 — Consumidor de Eventos (`xchanger:events`)**
+- [x] **Bloque 4 — Consumidor de Eventos (`xchanger:events`)**
   - Grupo `telegram-bot` en Redis Streams (`XREADGROUP` + `XAUTOCLAIM`), deduplicación por `event.id`, filtro estricto por `audience`, reacción a eventos internos (`channel.link.approved`, `channel.session.revoked`, `account.blocked`, `academic.changed`) y disparo de `BotEventHandlers`.
 - [ ] **Bloque 5 — Cola de Salida y Servidor HTTP (`Webhook` + `/healthz`)**
   - `OutboundQueue` (30 msg/s global, 1 msg/s por chat, manejo de `429 retry_after`), `POST /telegram/webhook` (`EP-B-01`, `X-Telegram-Bot-Api-Secret-Token`, dedup `update_id`, `200` inmediato), `GET /healthz` (`EP-B-02`) y cableado en [`index.ts`](../src/index.ts).

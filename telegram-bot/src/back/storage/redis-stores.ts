@@ -160,4 +160,19 @@ export class RedisDedupStore {
   ): Promise<void> {
     await this.redis.set(`tg:evt:done:${eventId}`, '1', 'EX', ttlSec);
   }
+
+  async incrementEventTries(
+    eventId: string,
+    ttlSec = DEFAULT_DEDUP_TTL_SEC,
+  ): Promise<number> {
+    const key = `tg:evt:tries:${eventId}`;
+    const current = Number((await this.redis.get(key)) ?? '0');
+    const next = (Number.isFinite(current) ? current : 0) + 1;
+    await this.redis.set(key, String(next), 'EX', ttlSec);
+    return next;
+  }
+
+  async clearEventTries(eventId: string): Promise<void> {
+    await this.redis.del(`tg:evt:tries:${eventId}`);
+  }
 }

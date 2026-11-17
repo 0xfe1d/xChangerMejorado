@@ -148,3 +148,41 @@ npm run typecheck   # 0 errores
 npm test            # 3 suites (block1 + block2 + block3) -> 22/22 tests pasados
 npm run build       # dist/index.js generado
 ```
+
+---
+
+## Bloque 4 — Consumidor de Eventos (`xchanger:events`) (Completado)
+
+### Qué se construyó
+
+1. **Contador de reintentos por evento bajo prefijo `tg:*` ([`redis-stores.ts`](../src/back/storage/redis-stores.ts))**
+   - En `RedisDedupStore` se añadieron [`incrementEventTries`](../src/back/storage/redis-stores.ts#L164) (`tg:evt:tries:<eventId>`, TTL 24 h) y [`clearEventTries`](../src/back/storage/redis-stores.ts#L175) usando únicamente comandos permitidos por la ACL de Redis (`tg:*`).
+
+2. **Despachador de eventos del dominio ([`event-dispatcher.ts`](../src/back/events/event-dispatcher.ts))**
+   - [`BotEventDispatcher`](../src/back/events/event-dispatcher.ts#L53) ([`dispatch`](../src/back/events/event-dispatcher.ts#L56)):
+     - [`handleAcademicChanged`](../src/back/events/event-dispatcher.ts#L91): invalida `RedisCatalogCache` ante cambios en `CARRERA`, `CURSO`, `ASIGNATURA` o `GRUPO`.
+     - [`handleChannelLinkApproved`](../src/back/events/event-dispatcher.ts#L97) / [`handleChannelLinkDenied`](../src/back/events/event-dispatcher.ts#L129): canjea automáticamente el `deviceCode` guardado en `RedisPendingLinkStore` llamando a `exchangeLinkCode` (tolerando `INVALID_GRANT` si el sondeo ganó la carrera) y notifica al chat.
+     - [`handleSessionRevoked`](../src/back/events/event-dispatcher.ts#L137) / [`handleAccountBlocked`](../src/back/events/event-dispatcher.ts#L148): borran la sesión en Redis y `bot-db`, y evitan doble aviso cuando llega `channel.session.revoked` con `reason === 'BLOCKED'`.
+     - [`dispatchAudienceEvent`](../src/back/events/event-dispatcher.ts#L155): filtra `event.audience` en lote contra `telegram_accounts` (`bot-db`), descarta en silencio eventos ajenos (§11 Privacidad), respeta `delivery.telegram` / `delivery.telegramChatMessages` en `notification.created` y entrega `offer.message.created`, `offer.status.changed` y `account.unblocked` a [`BotEventHandlers`](../src/contracts.ts#L486).
+
+3. **Consumidor de Redis Streams ([`event-consumer.ts`](../src/back/events/event-consumer.ts))**
+   - [`RedisEventStreamConsumer`](../src/back/events/event-consumer.ts#L72) sobre `xchanger:events` (grupo `telegram-bot`):
+     - [`ensureGroup`](../src/back/events/event-consumer.ts#L104): `XGROUP CREATE ... $ MKSTREAM` tolerando `BUSYGROUP`.
+     - [`processAvailable`](../src/back/events/event-consumer.ts#L156), [`reclaimStale`](../src/back/events/event-consumer.ts#L180) y [`start`](../src/back/events/event-consumer.ts#L199): lectura con `XREADGROUP`, recuperación de pendientes con `XAUTOCLAIM`, deduplicación por `event.id` (`tg:evt:done:*`), límite de `MAX_EVENT_DELIVERIES = 5` intentos con `XACK` y métrica [`getConsumerLagMs`](../src/back/events/event-consumer.ts#L100) para `/healthz`.
+
+### Archivos del Bloque 4
+
+| Archivo | Qué hace |
+| :--- | :--- |
+| [`redis-stores.ts`](../src/back/storage/redis-stores.ts) | Amplía `RedisDedupStore` con `tg:evt:tries:*` para contar reintentos sin salir de la ACL `tg:*`. |
+| [`event-dispatcher.ts`](../src/back/events/event-dispatcher.ts) | Aplica reacciones de infraestructura, filtra por `audience` contra `bot-db` y dispara `BotEventHandlers`. |
+| [`event-consumer.ts`](../src/back/events/event-consumer.ts) | Consume `xchanger:events` en el grupo `telegram-bot` con `XREADGROUP`, `XAUTOCLAIM`, `XACK` y dedup por `event.id`. |
+| [`block4.spec.ts`](../test/block4.spec.ts) | 6 pruebas unitarias de Jest (stream consumer, `XAUTOCLAIM`, privacidad `audience`, link aprobado, bloqueo/revocación, caché y chat). |
+
+### Verificación del Bloque 4
+
+```bash
+npm run typecheck   # 0 errores
+npm test            # 4 suites (block1 + block2 + block3 + block4) -> 28/28 tests pasados
+npm run build       # dist/index.js generado
+```
