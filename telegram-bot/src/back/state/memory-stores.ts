@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { CallbackPayload, CallbackStore, ConversationState, StateStore } from '../contracts';
+import { CallbackPayload, CallbackStore, ConversationState, StateStore } from '../../contracts';
 
 const DEFAULT_STATE_TTL_SEC = 15 * 60;
 const DEFAULT_CB_TTL_SEC = 24 * 60 * 60;

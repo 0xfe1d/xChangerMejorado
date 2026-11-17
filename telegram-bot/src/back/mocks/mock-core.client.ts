@@ -27,7 +27,7 @@ import {
   SentMessageResult,
   TelegramIdentityInput,
   UserProfile,
-} from '../contracts';
+} from '../../contracts';
 
 interface MockUserRecord {
   profile: UserProfile;

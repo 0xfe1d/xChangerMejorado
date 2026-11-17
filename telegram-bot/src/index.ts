@@ -1,7 +1,7 @@
-import { env } from './config/env';
+import { env } from './back/config/env';
 import { CallbackStore, CoreClient, StateStore } from './contracts';
-import { MockCoreClient } from './mocks/mock-core.client';
-import { MemoryCallbackStore, MemoryStateStore } from './state/memory-stores';
+import { MockCoreClient } from './back/mocks/mock-core.client';
+import { MemoryCallbackStore, MemoryStateStore } from './back/state/memory-stores';
 
 export * from './contracts';
 

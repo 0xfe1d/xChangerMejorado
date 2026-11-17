@@ -8,9 +8,10 @@ Adaptador del canal Telegram para **xChanger**. Opera desacoplado del core: no a
 
 - [`src/contracts.ts`](src/contracts.ts): Contratos e interfaces compartidas entre la capa de infraestructura y la interfaz conversacional (`CoreClient`, `StateStore`, `CallbackStore`, `BotEventHandlers`, DTOs y `CoreApiError`).
 - [`src/index.ts`](src/index.ts): Punto de entrada de servicios (`createBackServices()`), que provee `{ core, state, callbacks }`.
-- [`src/mocks/mock-core.client.ts`](src/mocks/mock-core.client.ts): Implementación en memoria de `CoreClient` para desarrollo y pruebas locales sin dependencias externas.
-- [`src/state/memory-stores.ts`](src/state/memory-stores.ts): Implementación en memoria de `StateStore` (estado conversacional, TTL de 15 min) y `CallbackStore` (claves cortas `< 64 bytes` para `callback_data`).
-- [`src/config/env.ts`](src/config/env.ts): Validación de variables de entorno con Zod.
+- [`src/back/`](src/back/): Capa de backend e infraestructura (configuración, cifrado AES-256-GCM, repositorio de `bot-db`, almacenes Redis, cliente del Core, consumidor de eventos y servidor webhook).
+  - [`src/back/mocks/mock-core.client.ts`](src/back/mocks/mock-core.client.ts): Implementación en memoria de `CoreClient` para desarrollo y pruebas locales sin dependencias externas.
+  - [`src/back/state/memory-stores.ts`](src/back/state/memory-stores.ts): Implementación en memoria de `StateStore` (estado conversacional, TTL de 15 min) y `CallbackStore` (claves cortas `< 64 bytes` para `callback_data`).
+  - [`src/back/config/env.ts`](src/back/config/env.ts): Validación de variables de entorno con Zod.
 
 ---
 
