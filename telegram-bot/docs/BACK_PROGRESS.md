@@ -109,3 +109,42 @@ npm run typecheck   # 0 errores
 npm test            # 2 suites (block1 + block2) -> 16/16 tests pasados
 npm run build       # dist/index.js generado
 ```
+
+---
+
+## Bloque 3 — `HttpCoreClient` (REST `/api/v1` + Caché) (Completado)
+
+### Qué se construyó
+
+1. **Caché de catálogo y grupos en Redis ([`catalog-cache.ts`](../src/back/core/catalog-cache.ts))**
+   - [`RedisCatalogCache`](../src/back/core/catalog-cache.ts#L28) (claves `tg:cache:catalog:*`, TTL de 5 min): cachea carreras ([`getCareers`](../src/back/core/catalog-cache.ts#L51) / [`setCareers`](../src/back/core/catalog-cache.ts#L55)), cursos ([`getCourses`](../src/back/core/catalog-cache.ts#L59) / [`setCourses`](../src/back/core/catalog-cache.ts#L64)) y grupos ([`getGroups`](../src/back/core/catalog-cache.ts#L69) / [`setGroups`](../src/back/core/catalog-cache.ts#L74)).
+   - [`invalidateByAcademicEvent`](../src/back/core/catalog-cache.ts#L82): invalidación en O(1) mediante claves versionadas (`tg:cache:catalog:ver:courses` y `tg:cache:catalog:ver:groups`) sin usar `KEYS` ni `SCAN`, compatible con Redis ACL restringido a `tg:*`.
+
+2. **Refresco seguro ante token expirado ([`session-manager.ts`](../src/back/core/session-manager.ts))**
+   - [`refreshOnExpired`](../src/back/core/session-manager.ts#L167): evita reutilizar de Redis el mismo `accessToken` recién rechazado con `401 TOKEN_EXPIRED` y coordina el refresco único en memoria y entre réplicas.
+
+3. **Transporte HTTP hacia el Core ([`core-http.ts`](../src/back/core/core-http.ts))**
+   - [`CoreHttpTransport`](../src/back/core/core-http.ts#L60) ([`send`](../src/back/core/core-http.ts#L92) + [`execute`](../src/back/core/core-http.ts#L170)): centraliza `X-Service-Authorization`, `Authorization`, `X-Request-Id` (ULID constante en reintentos), `Accept-Language: es`, `Idempotency-Key` (`tg:<updateId>` o UUID v4), timeouts con `AbortController`, reintento único ante `401 TOKEN_EXPIRED` / `401 SERVICE_UNAUTHORIZED` y limpieza local ante `401 SESSION_REVOKED` o `403 ACCOUNT_BLOCKED`.
+
+4. **Cliente HTTP del Core ([`http-core.client.ts`](../src/back/core/http-core.client.ts))**
+   - [`HttpCoreClient`](../src/back/core/http-core.client.ts#L75) implementa los **31 métodos** de [`CoreClient`](../src/contracts.ts#L239) delegando la red en `CoreHttpTransport`:
+     - Adaptadores al backend actual: [`adaptLegacySubjects`](../src/back/core/http-core.client.ts#L50), mapeo `mfaRequired` en [`verifyEmailOtp`](../src/back/core/http-core.client.ts#L133), limpieza idempotente en [`revoke`](../src/back/core/http-core.client.ts#L206), `status === 201` en [`addToExpediente`](../src/back/core/http-core.client.ts#L279), cabecera `X-Next-Cursor` en [`getNotifications`](../src/back/core/http-core.client.ts#L430) y envoltorio `{ telegram }` en [`updateNotificationPreferences`](../src/back/core/http-core.client.ts#L474).
+     - Nota de backend: [`getOfferMessages`](../src/back/core/http-core.client.ts#L397) apunta a `GET /offers/:id/messages` (`EP-C-15`, pendiente de añadir en `backend/` para Fase F3).
+
+### Archivos del Bloque 3
+
+| Archivo | Qué hace |
+| :--- | :--- |
+| [`catalog-cache.ts`](../src/back/core/catalog-cache.ts) | Caché Redis TTL 5 min para carreras, cursos y grupos con invalidación O(1) por eventos `academic.changed`. |
+| [`session-manager.ts`](../src/back/core/session-manager.ts) | Amplía `ChannelSessionManager` con `refreshOnExpired` para evitar reutilizar tokens recién caducados tras `401`. |
+| [`core-http.ts`](../src/back/core/core-http.ts) | Motor HTTP (`CoreHttpTransport`) con cabeceras, idempotencia, timeouts y reintentos únicos ante `401`. |
+| [`http-core.client.ts`](../src/back/core/http-core.client.ts) | Implementa los 31 métodos REST `/api/v1` de `CoreClient` sobre `CoreHttpTransport` y `RedisCatalogCache`. |
+| [`block3.spec.ts`](../test/block3.spec.ts) | 6 pruebas unitarias de Jest (flujos `S`, reintentos `401`, concurrencia, caché e invalidación, adaptadores y errores). |
+
+### Verificación del Bloque 3
+
+```bash
+npm run typecheck   # 0 errores
+npm test            # 3 suites (block1 + block2 + block3) -> 22/22 tests pasados
+npm run build       # dist/index.js generado
+```

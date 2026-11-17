@@ -139,20 +139,48 @@ export class ChannelSessionManager {
   }
 
   /** Rota el `refreshToken` contra `EP-C-06` de forma serializada por usuario. */
-  async refreshSession(externalUserId: string, requestId?: string): Promise<string> {
+  async refreshSession(
+    externalUserId: string,
+    requestId?: string,
+    expiredAccessToken?: string,
+  ): Promise<string> {
     const existing = this.inFlightByUser.get(externalUserId);
     if (existing) {
       return existing;
     }
 
-    const promise = this.performLockedRefresh(externalUserId, requestId).finally(() => {
+    const promise = this.performLockedRefresh(
+      externalUserId,
+      requestId,
+      expiredAccessToken,
+    ).finally(() => {
       this.inFlightByUser.delete(externalUserId);
     });
     this.inFlightByUser.set(externalUserId, promise);
     return promise;
   }
 
-  private async performLockedRefresh(externalUserId: string, requestId?: string): Promise<string> {
+  /**
+   * Fuerza la rotación cuando el Core rechaza el `accessToken` con `401 TOKEN_EXPIRED`.
+   * Si otra réplica ya lo rotó en Redis, reutiliza el nuevo token sin volver a rotar.
+   */
+  async refreshOnExpired(
+    externalUserId: string,
+    expiredAccessToken: string,
+    requestId?: string,
+  ): Promise<string> {
+    const current = await this.redis.get(this.accessKey(externalUserId));
+    if (current && current !== expiredAccessToken) {
+      return current;
+    }
+    return this.refreshSession(externalUserId, requestId, expiredAccessToken);
+  }
+
+  private async performLockedRefresh(
+    externalUserId: string,
+    requestId?: string,
+    expiredAccessToken?: string,
+  ): Promise<string> {
     const lockKey = this.lockKey(externalUserId);
     const lockId = crypto.randomUUID();
     const deadline = Date.now() + this.lockWaitMs;
@@ -163,7 +191,7 @@ export class ChannelSessionManager {
       await sleep(this.lockPollMs);
       // Si otra réplica terminó el refresco, reutilizamos su accessToken recién guardado
       const freshToken = await this.redis.get(this.accessKey(externalUserId));
-      if (freshToken) {
+      if (freshToken && freshToken !== expiredAccessToken) {
         return freshToken;
       }
       acquired = (await this.redis.set(lockKey, lockId, 'EX', this.lockTtlSec, 'NX')) === 'OK';
@@ -180,7 +208,7 @@ export class ChannelSessionManager {
     try {
       // Double-check tras obtener el lock por si otra réplica lo publicó justo antes
       const cachedAfterLock = await this.redis.get(this.accessKey(externalUserId));
-      if (cachedAfterLock) {
+      if (cachedAfterLock && cachedAfterLock !== expiredAccessToken) {
         return cachedAfterLock;
       }
 
