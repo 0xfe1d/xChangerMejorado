@@ -56,6 +56,26 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── Base de datos del bot (Escalado §12.1) ───────────────────
+  bot-db:
+    image: postgres:15-alpine
+    container_name: xchanger_bot_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     "${BOT_POSTGRES_USER:-xchanger_bot}"
+      POSTGRES_PASSWORD: "${BOT_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD}}"
+      POSTGRES_DB:       "${BOT_POSTGRES_DB:-xchanger_bot}"
+    volumes:
+      - bot_db_data:/var/lib/postgresql/data
+    networks:
+      - xchanger_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BOT_POSTGRES_USER:-xchanger_bot} -d ${BOT_POSTGRES_DB:-xchanger_bot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   # ── Backend (Express + Socket.io) ────────────────────────────
   backend:
     build:
@@ -111,6 +131,41 @@ services:
     networks:
       - xchanger_net
 
+  # ── Microservicio Telegram Bot (Escalado §12.1) ──────────────
+  telegram-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    container_name: xchanger_telegram_bot
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      USE_MOCK_CORE: "${TG_USE_MOCK_CORE:-false}"
+      CORE_API_URL: "http://backend:3000/api/v1"
+      REDIS_URL: "redis://redis:6379/0"
+      BOT_DATABASE_URL: "postgresql://${BOT_POSTGRES_USER:-xchanger_bot}:${BOT_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD}}@bot-db:5432/${BOT_POSTGRES_DB:-xchanger_bot}?sslmode=disable"
+      SERVICE_CLIENT_ID: "${SERVICE_CLIENT_ID:-telegram-bot}"
+      SERVICE_CLIENT_SECRET: "${SERVICE_CLIENT_SECRET:-}"
+      TOKEN_ENC_KEY: "${TOKEN_ENC_KEY:-}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_WEBHOOK_SECRET: "${TELEGRAM_WEBHOOK_SECRET:-dev-webhook-secret}"
+    depends_on:
+      bot-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks:
+      - xchanger_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   # ── Nginx (reverse proxy) ─────────────────────────────────────
   nginx:
     image: nginx:1.27-alpine
@@ -133,6 +188,7 @@ services:
     depends_on:
       - frontend
       - backend
+      - telegram-bot
     networks:
       - xchanger_net
     healthcheck:
@@ -181,6 +237,8 @@ services:
 # ─────────────────────────────────────────────────────────────
 volumes:
   postgres_data:
+    driver: local
+  bot_db_data:
     driver: local
   redis_data:
     driver: local

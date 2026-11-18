@@ -195,3 +195,26 @@ export async function startBotRuntime(options: StartBotRuntimeOptions): Promise<
 
   return { services, server, port, stop };
 }
+
+if (require.main === module) {
+  startBotRuntime({
+    onUpdate: () => undefined,
+  })
+    .then((runtime) => {
+      console.log(
+        `[telegram-bot] escuchando en puerto ${runtime.port} (USE_MOCK_CORE=${env.USE_MOCK_CORE})`,
+      );
+      const shutdown = () => {
+        runtime
+          .stop()
+          .then(() => process.exit(0))
+          .catch(() => process.exit(1));
+      };
+      process.once('SIGTERM', shutdown);
+      process.once('SIGINT', shutdown);
+    })
+    .catch((err) => {
+      console.error('[telegram-bot] error fatal al iniciar:', err);
+      process.exit(1);
+    });
+}

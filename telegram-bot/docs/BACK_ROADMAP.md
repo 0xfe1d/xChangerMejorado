@@ -18,7 +18,7 @@ Detalle de lo ya implementado: [BACK_PROGRESS.md](./BACK_PROGRESS.md)
   - Grupo `telegram-bot` en Redis Streams (`XREADGROUP` + `XAUTOCLAIM`), deduplicación por `event.id`, filtro estricto por `audience`, reacción a eventos internos (`channel.link.approved`, `channel.session.revoked`, `account.blocked`, `academic.changed`) y disparo de `BotEventHandlers`.
 - [x] **Bloque 5 — Cola de Salida y Servidor HTTP (`Webhook` + `/healthz`)**
   - `OutboundQueue` (30 msg/s global, 1 msg/s por chat, manejo de `429 retry_after`), `POST /telegram/webhook` (`EP-B-01`, `X-Telegram-Bot-Api-Secret-Token`, dedup `update_id`, `200` inmediato), `GET /healthz` (`EP-B-02`) y cableado en [`index.ts`](../src/index.ts).
-- [ ] **Bloque 6 — Docker, Nginx e Integración**
+- [x] **Bloque 6 — Docker, Nginx e Integración**
   - `Dockerfile` en dos etapas, servicios `telegram-bot` y `bot-db` en [`docker-compose.yml`](../../docker-compose.yml), ruta `POST /telegram/webhook` en Nginx y pruebas de integración.
 
 ---

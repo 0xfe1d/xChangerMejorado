@@ -226,3 +226,43 @@ npm run typecheck   # 0 errores
 npm test            # 5 suites (block1..block5) -> 33/33 tests pasados
 npm run build       # dist/index.js generado
 ```
+
+---
+
+## Bloque 6 — Docker, Nginx e Integración (Completado)
+
+### Qué se construyó
+
+1. **Contenedor Docker multi-etapa ([`Dockerfile`](../Dockerfile), [`.dockerignore`](../.dockerignore)) y arranque autónomo ([`index.ts`](../src/index.ts))**
+   - [`Dockerfile`](../Dockerfile): construcción en 2 etapas sobre `node:20-alpine` (`builder` compila con `npm run build` y poda devDependencies; `runner` ejecuta bajo `USER node` el entrypoint `node dist/index.js` exponiendo el puerto interno `8080`).
+   - [`index.ts`](../src/index.ts#L199-L220): bloque `if (require.main === module)` para arrancar `startBotRuntime()` y atender señales `SIGTERM` / `SIGINT` al ejecutar dentro del contenedor.
+
+2. **Servicios Compose y variables ([`docker-compose.yml`](../../docker-compose.yml), [`.env.example`](../../.env.example))**
+   - Servicio [`bot-db`](../../docker-compose.yml#L60): PostgreSQL 15 aislado con volumen `bot_db_data` y `healthcheck` `pg_isready`.
+   - Servicio [`telegram-bot`](../../docker-compose.yml#L135): conectado en `xchanger_net` (sin publicar puerto `8080`), esperando a `bot-db`, `redis` y `backend` sanos, y con `healthcheck` HTTP hacia `GET http://127.0.0.1:8080/healthz`.
+
+3. **Enrutamiento Nginx ([`nginx.conf`](../../nginx/nginx.conf), [`http.conf.template`](../../nginx/http.conf.template), [`https.conf.template`](../../nginx/https.conf.template))**
+   - `upstream telegram_bot` (`telegram-bot:8080`) y `location = /telegram/webhook` restringido a `POST` (`limit_except POST { deny all; }`) con tamaño máximo `1m` (§12.2).
+
+4. **Pruebas de Integración End-to-End ([`block6.spec.ts`](../test/block6.spec.ts))**
+   - Verifica de extremo a extremo la cadena completa (Webhook → Dedup → `HttpCoreClient` → `ServiceAuthManager` + `ChannelSessionManager` + `TokenCipher` → `RedisEventStreamConsumer` → `BotEventDispatcher` → `OutboundQueue`) en los escenarios **`CA-18`**, **`CA-19`**, **`CA-20`** y **`CA-22`** (§13.1), además de validar los ficheros Docker y Nginx.
+
+### Archivos del Bloque 6
+
+| Archivo | Qué hace |
+| :--- | :--- |
+| [`Dockerfile`](../Dockerfile) | Imagen de producción `node:20-alpine` en 2 etapas con usuario no root (`node`) y puerto `8080`. |
+| [`.dockerignore`](../.dockerignore) | Excluye tests, `.env`, `node_modules` y artefactos locales del contexto de build. |
+| [`index.ts`](../src/index.ts) | Añade arranque autónomo y apagado ordenado (`SIGTERM`/`SIGINT`) para `node dist/index.js`. |
+| [`docker-compose.yml`](../../docker-compose.yml) | Añade `bot-db`, `telegram-bot`, volumen `bot_db_data` y dependencia en `nginx`. |
+| [`.env.example`](../../.env.example) | Documenta variables de entorno de `bot-db` y `telegram-bot`. |
+| [`nginx.conf`](../../nginx/nginx.conf) / [`http.conf.template`](../../nginx/http.conf.template) / [`https.conf.template`](../../nginx/https.conf.template) | Enruta únicamente `POST /telegram/webhook` (máx. 1 MB) hacia `telegram-bot:8080`. |
+| [`block6.spec.ts`](../test/block6.spec.ts) | 3 pruebas de integración end-to-end (`CA-18`, `CA-19`, `CA-20`, `CA-22`) + validación de despliegue. |
+
+### Verificación del Bloque 6
+
+```bash
+npm run typecheck   # 0 errores
+npm test            # 6 suites (block1..block6) -> 36/36 tests pasados
+npm run build       # dist/index.js generado
+```
