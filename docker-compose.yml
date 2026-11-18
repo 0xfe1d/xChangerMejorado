@@ -8,6 +8,8 @@
 #   ENABLE_HTTPS     → true (HTTPS con Let's Encrypt) | false (HTTP puro)
 #   COOKIE_SECURE    → true si APP_URL usa https://, false en localhost
 #   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+#   MFA_KEK          → clave de cifrado de los secretos TOTP (openssl rand -hex 32)
+#   MFA_REQUIRE_HTTPS→ true en producción; false solo para probar en http://localhost
 #
 # Variables requeridas en backend/.env:
 #   JWT_ACCESS_SECRET, JWT_REFRESH_SECRET, JWT_CHANNEL_SECRET,
@@ -75,6 +77,8 @@ services:
       REDIS_URL: "redis://redis:6379/0"
       # Página de aprobación de vinculaciones del bot (EP-C-04/05)
       CHANNEL_LINK_BASE_URL: "${APP_URL}/vincular"
+      MFA_SERVICE_URL: "http://mfa:8081"
+      MFA_REQUIRE_HTTPS: "${MFA_REQUIRE_HTTPS:-true}"
     # AR-02: el puerto 3000 ya NO se publica; solo Nginx es accesible desde fuera
     depends_on:
       db:
@@ -89,6 +93,38 @@ services:
       timeout: 5s
       retries: 8
       start_period: 60s
+
+  # ── mfa-service (TOTP RFC 6238, compatible con Microsoft Authenticator) ──
+  # Sin puerto publicado: solo lo llama el backend por la red interna, con JWT
+  # de servicio que valida contra el JWKS del core. Guarda sus datos en el
+  # esquema "mfa" de la misma instancia de PostgreSQL.
+  mfa:
+    build:
+      context: ./mfa-service
+      dockerfile: Dockerfile
+    container_name: xchanger_mfa
+    restart: unless-stopped
+    environment:
+      PORT: "8081"
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: "${POSTGRES_USER}"
+      PGPASSWORD: "${POSTGRES_PASSWORD}"
+      PGDATABASE: "${POSTGRES_DB}"
+      MFA_KEK: "${MFA_KEK}"
+      MFA_ISSUER: "xChanger"
+      CORE_JWKS_URL: "http://backend:3000/api/v1/internal/.well-known/jwks.json"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - xchanger_net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8081/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # ── Frontend (Astro SSR) ──────────────────────────────────────
   frontend:
@@ -106,6 +142,9 @@ services:
       HOST: "0.0.0.0"
       PORT: "4321"
       NODE_ENV: production
+      # El SSR lee API_URL en runtime (process.env); sin ella cae en PUBLIC_API_URL
+      # (http://localhost), que dentro del contenedor no apunta al backend
+      API_URL: "http://backend:3000"
     depends_on:
       - backend
     networks:

@@ -56,11 +56,15 @@ export interface VerifyOtpInput {
 export interface LoginInput {
   email: string;
   password: string;
+  /** "Recordar inicio de sesión": refresh de JWT_REFRESH_REMEMBER_EXPIRES_IN. */
+  rememberMe?: boolean;
 }
 
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
+  /** La sesión es persistente (cookie con caducidad) en vez de cookie de sesión del navegador. */
+  remember: boolean;
 }
 
 export interface SessionUser {
@@ -85,11 +89,11 @@ function signAccessToken(payload: Omit<AccessTokenPayload, 'jti'>): string {
   });
 }
 
-function signRefreshToken(userId: string, authTime: number): string {
+function signRefreshToken(userId: string, authTime: number, remember: boolean): string {
   // jti aleatorio para que dos sesiones emitidas en el mismo segundo no coincidan
-  return jwt.sign({ sub: userId, auth_time: authTime }, env.JWT_REFRESH_SECRET, {
+  return jwt.sign({ sub: userId, auth_time: authTime, ...(remember ? { rem: true } : {}) }, env.JWT_REFRESH_SECRET, {
     algorithm: 'HS256',
-    expiresIn: env.JWT_REFRESH_EXPIRES_IN as jwt.SignOptions['expiresIn'],
+    expiresIn: (remember ? env.JWT_REFRESH_REMEMBER_EXPIRES_IN : env.JWT_REFRESH_EXPIRES_IN) as jwt.SignOptions['expiresIn'],
     jwtid: crypto.randomUUID(),
   });
 }
@@ -98,11 +102,15 @@ function signRefreshToken(userId: string, authTime: number): string {
  * Emite la sesión web (CookieSessionIssuer, §5.3, lo convierte en cookies).
  * RF-AUT-12: solo se guarda el hash bcrypt del refresh token.
  */
-export async function issueWebSession(user: Pick<User, 'id' | 'email' | 'role'>, authTime = nowSeconds()): Promise<AuthTokens> {
-  const accessToken = signAccessToken({ sub: user.id, email: user.email, role: user.role, auth_time: authTime });
-  const refreshToken = signRefreshToken(user.id, authTime);
+export async function issueWebSession(
+  user: Pick<User, 'id' | 'email' | 'role'>,
+  authTime = nowSeconds(),
+  remember = false,
+): Promise<AuthTokens> {
+  const accessToken = signAccessToken({ sub: user.id, email: user.email, role: user.role, auth_time: authTime, ...(remember ? { rem: true } : {}) });
+  const refreshToken = signRefreshToken(user.id, authTime, remember);
   await updateRefreshTokenHash(user.id, await hashPassword(refreshToken));
-  return { accessToken, refreshToken };
+  return { accessToken, refreshToken, remember };
 }
 
 function assertInstitutionalEmail(email: string): void {
@@ -247,12 +255,12 @@ export async function login(input: LoginInput): Promise<LoginResult> {
   // §7.3: con MFA, el estado de bloqueo solo se revela tras ambos factores
   if (user.mfaEnabled) {
     const { token, jti } = signPurposeToken('mfa_challenge', user.id, challengeStore.MFA_CHALLENGE_TTL_SECONDS);
-    await challengeStore.createChallenge(jti, user.id);
+    await challengeStore.createChallenge(jti, user.id, input.rememberMe === true);
     return { kind: 'mfa', challengeToken: token, expiresIn: challengeStore.MFA_CHALLENGE_TTL_SECONDS };
   }
 
   await assertNotBlocked(user);
-  const tokens = await issueWebSession(user);
+  const tokens = await issueWebSession(user, undefined, input.rememberMe === true);
   return { kind: 'session', ...tokens, user: { id: user.id, email: user.email, name: user.name, role: user.role } };
 }
 
@@ -323,7 +331,7 @@ export async function completeMfaChallenge(
   if (!user) throw new AppError(401, 'Credenciales incorrectas', 'INVALID_CREDENTIALS');
   await assertNotBlocked(user);
 
-  const tokens = await issueWebSession(user);
+  const tokens = await issueWebSession(user, undefined, state.remember === true);
   const warnings: string[] = [];
   if (result.driftWarning) warnings.push('CLOCK_DRIFT');
   if (result.recoveryCodesRemaining !== undefined && result.recoveryCodesRemaining <= 2) warnings.push('RECOVERY_CODES_LOW');
@@ -337,6 +345,7 @@ const MFA_CHALLENGE_REMAINING = (attempts: number) => challengeStore.MFA_CHALLEN
 interface RefreshPayload {
   sub: string;
   auth_time?: number;
+  rem?: boolean;
 }
 
 /**
@@ -344,7 +353,7 @@ interface RefreshPayload {
  * Si el usuario está bloqueado, revoca la sesión (RF-AUT-12). Conserva auth_time
  * para que "sesión reciente" no se renueve con un simple refresco.
  */
-export async function refreshToken(token: string): Promise<string> {
+export async function refreshToken(token: string): Promise<{ accessToken: string; remember: boolean }> {
   let payload: RefreshPayload;
   try {
     payload = jwt.verify(token, env.JWT_REFRESH_SECRET, { algorithms: ['HS256'] }) as RefreshPayload;
@@ -365,7 +374,13 @@ export async function refreshToken(token: string): Promise<string> {
   }
 
   const fresh = await findUserById(user.id);
-  return signAccessToken({ sub: user.id, email: user.email, role: fresh?.role ?? user.role, auth_time: payload.auth_time ?? 0 });
+  const remember = payload.rem === true;
+  return {
+    accessToken: signAccessToken({
+      sub: user.id, email: user.email, role: fresh?.role ?? user.role, auth_time: payload.auth_time ?? 0, ...(remember ? { rem: true } : {}),
+    }),
+    remember,
+  };
 }
 
 // ── Logout ────────────────────────────────────────────────────
@@ -430,6 +445,7 @@ export async function reauthenticate(principal: AccessTokenPayload, input: Reaut
       role: user.role,
       auth_time: principal.auth_time ?? 0,
       reauth_at: nowSeconds(),
+      ...(principal.rem ? { rem: true } : {}),
     }),
   };
 }

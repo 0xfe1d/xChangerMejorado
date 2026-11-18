@@ -40,8 +40,8 @@ export async function confirmEnrollment(req: Request, res: Response, next: NextF
   const parsed = z.object({ code: codeSchema }).safeParse(req.body);
   if (!parsed.success) return next(new AppError(400, parsed.error.errors[0].message));
   try {
-    const { recoveryCodes, tokens } = await mfaService.confirmEnrollment(req.user!.sub, enrollmentId(req), parsed.data.code);
-    setAuthCookies(req, res, tokens.accessToken, tokens.refreshToken);
+    const { recoveryCodes, tokens } = await mfaService.confirmEnrollment(req.user!.sub, enrollmentId(req), parsed.data.code, req.user!.rem === true);
+    setAuthCookies(req, res, tokens.accessToken, tokens.refreshToken, tokens.remember);
     noStore(res);
     res.json({ enabled: true, recoveryCodes });
   } catch (err) { next(err); }

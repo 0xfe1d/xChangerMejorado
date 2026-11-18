@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import geoip from 'geoip-lite';
 import { env } from '../config/env';
+import { durationToMs } from '../utils/duration';
 import * as authService from '../services/auth.service';
 import { createNotification } from '../services/notification.service';
 import { AppError } from '../middleware/errorHandler';
@@ -45,6 +46,7 @@ const verifyOtpSchema = z.object({ otpCode: otpSchema });
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
+  rememberMe: z.boolean().optional(),
 });
 
 const mfaChallengeSchema = z.object({
@@ -60,6 +62,10 @@ const reauthSchema = z.object({
 
 // ── CookieSessionIssuer (§5.3) ────────────────────────────────
 
+// Caducidad de las cookies = caducidad de los JWT configurada en .env
+const ACCESS_COOKIE_MS = durationToMs(env.JWT_ACCESS_EXPIRES_IN)!;
+const REMEMBER_COOKIE_MS = durationToMs(env.JWT_REFRESH_REMEMBER_EXPIRES_IN)!;
+
 const COOKIE_DEFAULTS = {
   httpOnly: true,
   secure: env.COOKIE_SECURE,
@@ -71,15 +77,25 @@ const COOKIE_DEFAULTS = {
 const refreshPath = (req: Request) => `${req.baseUrl}/refresh`;
 const challengePath = (req: Request) => `${req.baseUrl}/mfa/challenge`;
 
-export function setAuthCookies(req: Request, res: Response, accessToken: string, refreshToken: string): void {
-  res.cookie('access_token', accessToken, { ...COOKIE_DEFAULTS, maxAge: 15 * 60 * 1000 });
+/**
+ * Sin "recordar", las cookies son de sesión del navegador (se borran al cerrarlo)
+ * y el refresh dura JWT_REFRESH_EXPIRES_IN. Con "recordar", la cookie de refresco
+ * persiste JWT_REFRESH_REMEMBER_EXPIRES_IN (30 días por defecto).
+ */
+export function setAuthCookies(req: Request, res: Response, accessToken: string, refreshToken: string, remember = false): void {
+  setAccessCookie(res, accessToken, remember);
   // RF-AUT-11: el refresh token solo viaja al endpoint de renovación
-  res.cookie('refresh_token', refreshToken, { ...COOKIE_DEFAULTS, maxAge: 7 * 24 * 60 * 60 * 1000, path: refreshPath(req) });
+  res.cookie('refresh_token', refreshToken, {
+    ...COOKIE_DEFAULTS,
+    path: refreshPath(req),
+    ...(remember ? { maxAge: REMEMBER_COOKIE_MS } : {}),
+  });
 }
 
-function setAccessCookie(res: Response, accessToken: string): void {
-  res.cookie('access_token', accessToken, { ...COOKIE_DEFAULTS, maxAge: 15 * 60 * 1000 });
+function setAccessCookie(res: Response, accessToken: string, remember = false): void {
+  res.cookie('access_token', accessToken, { ...COOKIE_DEFAULTS, ...(remember ? { maxAge: ACCESS_COOKIE_MS } : {}) });
 }
+
 
 function clearAuthCookies(req: Request, res: Response): void {
   res.clearCookie('access_token', { ...COOKIE_DEFAULTS });
@@ -128,7 +144,7 @@ export async function verifyOtp(req: Request, res: Response, next: NextFunction)
   try {
     const { accessToken, refreshToken } = await authService.verifyOtp({ otpToken, otpCode: parsed.data.otpCode });
     res.clearCookie('otp_token', COOKIE_DEFAULTS);
-    setAuthCookies(req, res, accessToken, refreshToken);
+    setAuthCookies(req, res, accessToken, refreshToken, false);
     res.status(201).json({ message: 'Cuenta creada correctamente. Bienvenido/a a xChanger.' });
   } catch (err) {
     next(err);
@@ -155,7 +171,7 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
       res.json({ mfaRequired: true, methods: ['xotp', 'recovery_code'], expiresIn: result.expiresIn });
       return;
     }
-    setAuthCookies(req, res, result.accessToken, result.refreshToken);
+    setAuthCookies(req, res, result.accessToken, result.refreshToken, result.remember);
     afterWebLogin(req, result.user.id);
     res.json({ message: 'Sesión iniciada correctamente.' });
   } catch (err) {
@@ -172,7 +188,7 @@ export async function mfaChallenge(req: Request, res: Response, next: NextFuncti
   try {
     const result = await authService.completeMfaChallenge(token, parsed.data, clientIp(req));
     res.clearCookie('mfa_challenge', { ...COOKIE_DEFAULTS, sameSite: 'strict', path: challengePath(req) });
-    setAuthCookies(req, res, result.accessToken, result.refreshToken);
+    setAuthCookies(req, res, result.accessToken, result.refreshToken, result.remember);
     afterWebLogin(req, result.user.id);
     res.json({ user: result.user, ...(result.warnings.length ? { warnings: result.warnings } : {}) });
   } catch (err) {
@@ -188,7 +204,8 @@ export async function refresh(req: Request, res: Response, next: NextFunction): 
   const token = req.cookies?.refresh_token as string | undefined;
   if (!token) return next(new AppError(401, 'No existe sesión activa', 'SESSION_REVOKED'));
   try {
-    setAccessCookie(res, await authService.refreshToken(token));
+    const { accessToken, remember } = await authService.refreshToken(token);
+    setAccessCookie(res, accessToken, remember);
     res.json({ message: 'Token renovado.' });
   } catch (err) {
     clearAuthCookies(req, res);
@@ -217,7 +234,7 @@ export async function reauthenticate(req: Request, res: Response, next: NextFunc
       res.status(202).json({ message: 'Te hemos enviado un código al correo.', codeLength: 6, expiresIn: 600 });
       return;
     }
-    setAccessCookie(res, result.accessToken);
+    setAccessCookie(res, result.accessToken, req.user!.rem === true);
     res.json({ message: 'Identidad verificada.', reauthValidFor: REAUTH_VALIDITY_SECONDS });
   } catch (err) {
     next(err);
