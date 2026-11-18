@@ -186,3 +186,43 @@ npm run typecheck   # 0 errores
 npm test            # 4 suites (block1 + block2 + block3 + block4) -> 28/28 tests pasados
 npm run build       # dist/index.js generado
 ```
+
+---
+
+## Bloque 5 — Cola de Salida y Servidor HTTP (`Webhook` + `/healthz`) (Completado)
+
+### Qué se construyó
+
+1. **Cola de salida con control de ritmo hacia Telegram ([`outbound-queue.ts`](../src/back/telegram/outbound-queue.ts))**
+   - [`OutboundQueue`](../src/back/telegram/outbound-queue.ts#L61):
+     - [`enqueue`](../src/back/telegram/outbound-queue.ts#L89): serializa envíos por `chatId` (1 msg/s por chat) y controla la ventana global (30 msg/s).
+     - Ante respuestas `429` de Telegram ([`TelegramRateLimitError`](../src/back/telegram/outbound-queue.ts#L6)), bloquea globalmente y reintenta respetando `parameters.retry_after`.
+     - Métodos listos para el bot: [`callTelegramApi`](../src/back/telegram/outbound-queue.ts#L168), [`sendMessage`](../src/back/telegram/outbound-queue.ts#L199), [`deleteMessage`](../src/back/telegram/outbound-queue.ts#L212) (`RF-TGB-13` para borrar OTP/XOTP) y [`answerCallbackQuery`](../src/back/telegram/outbound-queue.ts#L219).
+
+2. **Servidor HTTP (`EP-B-01` + `EP-B-02`) ([`webhook-server.ts`](../src/back/http/webhook-server.ts))**
+   - [`BotHttpServer`](../src/back/http/webhook-server.ts#L117) ([`handleRequest`](../src/back/http/webhook-server.ts#L139)):
+     - [`handleWebhook`](../src/back/http/webhook-server.ts#L175) (`POST /telegram/webhook`): valida `X-Telegram-Bot-Api-Secret-Token` en tiempo constante ([`verifySecretToken`](../src/back/http/webhook-server.ts#L44), `401` si falla), limita el payload a 1 MB (`413`), deduplica `update_id` en `RedisDedupStore` (`tg:upd:*`) y responde `200` inmediato ejecutando `onUpdate` en segundo plano con [`drain`](../src/back/http/webhook-server.ts#L243) / [`close`](../src/back/http/webhook-server.ts#L249) limpio.
+     - [`handleHealthz`](../src/back/http/webhook-server.ts#L160) (`GET /healthz`): devuelve `{ status: 'ok' | 'degraded', redis, core, consumerLagMs }`.
+
+3. **Cableado del microservicio ([`index.ts`](../src/index.ts)) y ajuste de tipado en streams ([`event-consumer.ts`](../src/back/events/event-consumer.ts))**
+   - [`createBackServices`](../src/index.ts#L82): conserva 100 % el modo `USE_MOCK_CORE=true` (`MockCoreClient` + almacenes en memoria + `OutboundQueue`) e instancia toda la infraestructura real cuando `USE_MOCK_CORE=false` (`HttpCoreClient`, almacenes Redis `tg:*`, `ChannelSessionManager`, `RedisCatalogCache`, `OutboundQueue`).
+   - [`startBotRuntime`](../src/index.ts#L141): inicializa `bot-db`, arranca `RedisEventStreamConsumer` con `BotEventDispatcher`, levanta `BotHttpServer` en `env.PORT` y provee apagado ordenado `stop()`.
+   - [`RedisStreamClient`](../src/back/events/event-consumer.ts#L16): ajustadas las sobrecargas de `xreadgroup` / `xautoclaim` para compatibilidad directa sin casts con `ioredis`.
+
+### Archivos del Bloque 5
+
+| Archivo | Qué hace |
+| :--- | :--- |
+| [`outbound-queue.ts`](../src/back/telegram/outbound-queue.ts) | Cola FIFO por chat con límite de 1 msg/s por chat, 30 msg/s global y retry automático ante `429`. |
+| [`webhook-server.ts`](../src/back/http/webhook-server.ts) | Servidor HTTP nativo exponiendo `POST /telegram/webhook` (`EP-B-01`) y `GET /healthz` (`EP-B-02`). |
+| [`index.ts`](../src/index.ts) | Conecta modo real (`USE_MOCK_CORE=false`) y modo mock, más `startBotRuntime()` para arrancar el servicio. |
+| [`event-consumer.ts`](../src/back/events/event-consumer.ts) | Sobrecargas exactas en `RedisStreamClient` para encajar directamente con `ioredis`. |
+| [`block5.spec.ts`](../test/block5.spec.ts) | 5 pruebas unitarias de Jest (`OutboundQueue`, `BotHttpServer` webhook/healthz y `createBackServices` mock/real). |
+
+### Verificación del Bloque 5
+
+```bash
+npm run typecheck   # 0 errores
+npm test            # 5 suites (block1..block5) -> 33/33 tests pasados
+npm run build       # dist/index.js generado
+```

@@ -21,8 +21,37 @@ export interface RedisStreamClient {
     id: string,
     mkstream: 'MKSTREAM',
   ): Promise<unknown>;
-  xreadgroup(...args: Array<string | number>): Promise<unknown>;
-  xautoclaim(...args: Array<string | number>): Promise<unknown>;
+  xreadgroup(
+    groupToken: 'GROUP',
+    group: string,
+    consumer: string,
+    countToken: 'COUNT',
+    count: number,
+    streamsToken: 'STREAMS',
+    stream: string,
+    id: string,
+  ): Promise<unknown>;
+  xreadgroup(
+    groupToken: 'GROUP',
+    group: string,
+    consumer: string,
+    countToken: 'COUNT',
+    count: number,
+    blockToken: 'BLOCK',
+    blockMs: number,
+    streamsToken: 'STREAMS',
+    stream: string,
+    id: string,
+  ): Promise<unknown>;
+  xautoclaim(
+    stream: string,
+    group: string,
+    consumer: string,
+    minIdleTime: number,
+    start: string,
+    countToken: 'COUNT',
+    count: number,
+  ): Promise<unknown>;
   xack(stream: string, group: string, id: string): Promise<number>;
   disconnect?(): void;
 }
