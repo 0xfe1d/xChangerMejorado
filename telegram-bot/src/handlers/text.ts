@@ -1,5 +1,6 @@
 import { BackServices } from '../index';
 import { TelegramContext } from '../types/telegram';
+import { showCarreraPage, showSubjectCandidates } from './callback';
 
 // Manejador de texto y eliminador de mensajes OPT y MFA - RF-TGB-13
 export const registerTextHandler = (bot: any, services: BackServices) => {
@@ -94,6 +95,113 @@ export const registerTextHandler = (bot: any, services: BackServices) => {
                 await state.clear(chatId);
                 await ctx.reply(`¡Inicio de sesión exitoso! Ahora estás vinculado y puedes usar los comandos disponibles. ¡Bienvenido/a **${session.user.name}**!`, { 
                     parse_mode: 'Markdown', 
+                });
+                return;
+            }
+
+            // Registro - Nombre
+            if (currentState.step === 'REGISTRO:ESPERANDO_NOMBRE') {
+                if (text.length < 2) {
+                    await ctx.reply('El nombre es demasiado corto. Escribe tu nombre completo o /cancelar:');
+                    return;
+                }
+
+                await state.set(
+                    chatId,
+                    {
+                        step: 'REGISTRO:ESPERANDO_EMAIL',
+                        data: { ...currentState.data, name: text },
+                    },
+                    900
+                );
+
+                await ctx.reply('Escribe tu **correo electrónico** (o /cancelar para salir):', {
+                    parse_mode: 'Markdown',
+                });
+                return;
+            }
+
+            // Registro - Email
+            if (currentState.step === 'REGISTRO:ESPERANDO_EMAIL') {
+                const email = text.toLowerCase();
+                if (!email.includes('@')) {
+                    await ctx.reply('El correo no es valido. Inténta de nuevo o escribe /cancelar:');
+                    return;
+                }
+
+                await state.set(
+                    chatId,
+                    {
+                        step: 'REGISTRO:ELEGIR_CARRERA',
+                        data: { ...currentState.data, email},
+                    },
+                    900
+                );
+
+                await showCarreraPage(ctx, core, services.callbacks, chatId, 0);
+                return;
+            }
+
+            // Registro - OTP alta RF-TGB-13
+            if (currentState.step === 'REGISTRO:ESPERANDO_OTP') {
+                if (ctx.message?.message_id) {
+                    await ctx.deleteMessage(ctx.message.message_id).catch(() => {});
+                }
+
+                const challengeToken = currentState.data.challengeToken as string;
+                const carreraId = currentState.data.carreraId as string | undefined;
+                const cursoId = currentState.data.cursoId as string | undefined;
+
+                const session = await core.verifyRegistrationOtp(tgIdentify, challengeToken, text);
+                await state.set(
+                    chatId,
+                    {
+                        step: 'REGISTRO:ASIGNATURAS_INICIALES',
+                        data: {
+                            userId: session.user.id,
+                            carreraId,
+                            cursoId,
+                            addedSubjectIds: [],
+                            subjectQuery: '',
+                        },
+                    },
+                    900
+                );
+
+                await ctx.reply(
+                    `¡Cuenta creada y sesión iniciada para **${session.user.name}**!\n\n` +
+                    'Añade **al menos una asignatura** a tu expediente. ' +
+                    'Escribe parte del nombre o código de la asignatura para buscarla:',
+                    { parse_mode: 'Markdown' }
+                );
+                await showSubjectCandidates(ctx, core, services.callbacks, {
+                    q: '',
+                    carreraId,
+                    cursoId,
+                    page: 0,
+                });
+                return;
+            }
+
+            // Registro - Busqueda asignaturas 
+            if (currentState.step === 'REGISTRO:ASIGNATURAS_INICIALES') {
+                const carreraId = currentState.data.carreraId as string | undefined;
+                const cursoId = currentState.data.cursoId as string | undefined;
+
+                await state.set(
+                    chatId,
+                    {
+                        step: 'REGISTRO:ASIGNATURAS_INICIALES',
+                        data: { ...currentState.data, subjectQuery: text },
+                    },
+                    900
+                );
+
+                await showSubjectCandidates(ctx, core, services.callbacks, {
+                    q: text,
+                    carreraId,
+                    cursoId,
+                    page: 0,
                 });
                 return;
             }

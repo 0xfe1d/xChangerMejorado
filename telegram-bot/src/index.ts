@@ -4,6 +4,7 @@ import { MockCoreClient } from './mocks/mock-core.client';
 import { MemoryCallbackStore, MemoryStateStore } from './state/memory-stores';
 import { registerCommands } from './handlers/command';
 import { registerTextHandler } from './handlers/text';
+import { registerCallbackHandlers } from './handlers/callback';
 
 declare const require: (moduleName: string) => unknown;
 declare const console: { log(...data: unknown[]): void; error(...data: unknown[]): void; };
@@ -50,6 +51,7 @@ bot.use(async (ctx: any, next: () => Promise<void>) => {
 
 registerCommands(bot, services);
 registerTextHandler(bot, services);
+registerCallbackHandlers(bot, services);
 
 bot.catch((err: unknown, ctx: any) => {
   console.error(`Error en el bot de Telegram: ${err}`);
