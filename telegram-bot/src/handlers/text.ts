@@ -1,6 +1,6 @@
 import { BackServices } from '../index';
 import { TelegramContext } from '../types/telegram';
-import { showCarreraPage, showSubjectCandidates } from './callback';
+import { showCarreraPage, showExpSubjectSearch, showSubjectCandidates } from './callback';
 
 // Manejador de texto y eliminador de mensajes OPT y MFA - RF-TGB-13
 export const registerTextHandler = (bot: any, services: BackServices) => {
@@ -138,7 +138,7 @@ export const registerTextHandler = (bot: any, services: BackServices) => {
                     900
                 );
 
-                await showCarreraPage(ctx, core, services.callbacks, 4);
+                await showCarreraPage(ctx, core, services.callbacks, 0);
                 return;
             }
 
@@ -213,10 +213,22 @@ export const registerTextHandler = (bot: any, services: BackServices) => {
                     { step: 'EXP:BUSCAR_ASIGNATURA', data: { q: text } },
                     900,
                 );
-                await showSubjectCandidates(ctx, core, services.callbacks, {
-                    q: text,
-                    page: 0,
-                });
+                await showExpSubjectSearch(ctx, core, services.callbacks, text, 0);
+                return;
+            }
+
+            // Chat activo de oferta aceptada
+            if (currentState.step === 'CHAT:ACTIVO') {
+                const offerId = String(currentState.data.offerId ?? '');
+                if (!offerId) {
+                    await state.clear(chatId);
+                    await ctx.reply('La sesión de chat se perdió. Usa /chat para volver a entrar.');
+                    return;
+                }
+
+                const updateId = (ctx as any).update?.update_id as number | undefined;
+                await core.sendOfferMessage(externalUserId, offerId, text, { updateId });
+                await ctx.reply('Mensaje enviado.');
                 return;
             }
         } catch (error: any) {

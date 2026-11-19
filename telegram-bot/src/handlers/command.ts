@@ -1,6 +1,6 @@
 import { BackServices } from '../index';
 import { TelegramContext } from '../types/telegram';
-import { sendExpedienteView, startOfferFlow } from './callback';
+import { enterOfferChat, sendExpedienteView, sendMyOffersView, sendNotificationsView, startOfferFlow } from './callback';
 
 // Comandos principales del bot telegram
 export function registerCommands(bot: any, services: BackServices) {
@@ -179,7 +179,7 @@ export function registerCommands(bot: any, services: BackServices) {
                 { parse_mode: 'Markdown'}
             );
         } catch {
-            await ctx.reply('No se pudo iniciarl el registro en este momento. Inténtalo de nuevo mas tarde.');
+            await ctx.reply('No se pudo iniciar el registro en este momento. Inténtalo de nuevo mas tarde.');
         }
     })
 
@@ -238,6 +238,108 @@ export function registerCommands(bot: any, services: BackServices) {
             await startOfferFlow(ctx, core, state, callbacks, chatId, externalUserId, 'create');
         } catch {
             await ctx.reply('No se pudo iniciar la creación de oferta. Inténtalo de nuevo más tarde.');
+        }
+    });
+
+    // Comando /misofertas
+    bot.command('misofertas', async (ctx: TelegramContext) => {
+        const externalUserId = ctx.from?.id.toString();
+        const chatId = ctx.chat?.id.toString();
+        if (!externalUserId || !chatId) return;
+
+        try {
+            const linked = await core.isLinked(externalUserId);
+            if (!linked) {
+                await ctx.reply('No estás vinculado. Usa /vincular o /entrar primero.');
+                return;
+            }
+
+            await sendMyOffersView(ctx, core, callbacks, externalUserId);
+        } catch {
+            await ctx.reply('No se pudieron cargar tus ofertas. Inténtalo de nuevo más tarde.');
+        }
+    });
+
+    // Comando /chat
+    bot.command('chat', async (ctx: TelegramContext) => {
+        const externalUserId = ctx.from?.id.toString();
+        const chatId = ctx.chat?.id.toString();
+        if (!externalUserId || !chatId) return;
+
+        try {
+            const linked = await core.isLinked(externalUserId);
+            if (!linked) {
+                await ctx.reply('No estás vinculado. Usa /vincular o /entrar primero.');
+                return;
+            }
+
+            const argsText = (ctx.message?.text ?? '').replace(/^\/chat(?:@\w+)?/i, '').trim();
+            const myOffers = await core.listMyOffers(externalUserId, { status: ['ACCEPTED'] });
+
+            if (myOffers.items.length === 0) {
+                await ctx.reply('No tienes ninguna oferta en estado **ACCEPTED** con chat disponible.', {
+                    parse_mode: 'Markdown',
+                });
+                return;
+            }
+
+            const target = argsText
+                ? myOffers.items.find((o) => o.id === argsText)
+                : myOffers.items.length === 1
+                    ? myOffers.items[0]
+                    : undefined;
+
+            if (!target) {
+                const rows = await Promise.all(
+                    myOffers.items.map(async (o) => [
+                        {
+                            text: `Chat: ${o.asignatura.codigo} (${o.grupoActual.nombre} ⇄ ${o.grupoDeseado.nombre})`,
+                            callback_data: await callbacks.encode({ action: 'myoff:chat', data: { offerId: o.id } }, 900),
+                        },
+                    ]),
+                );
+
+                await ctx.reply('Tienes varias ofertas aceptadas. Elige a cuál quieres entrar:', {
+                    reply_markup: { inline_keyboard: rows },
+                });
+                return;
+            }
+
+            await enterOfferChat(ctx, core, state, chatId, externalUserId, target.id);
+        } catch {
+            await ctx.reply('No se pudo abrir el chat de la oferta. Inténtalo de nuevo más tarde.');
+        }
+    });
+
+    // Comando /salir
+    bot.command('salir', async (ctx: TelegramContext) => {
+        const chatId = ctx.chat?.id.toString();
+        if (!chatId) return;
+
+        const current = await state.get(chatId);
+        if (current?.step === 'CHAT:ACTIVO') {
+            await state.clear(chatId);
+            await ctx.reply('Has salido del modo chat.');
+        } else {
+            await ctx.reply('No estabas dentro de ningún chat activo.');
+        }
+    });
+
+    // Comando /notificaciones
+    bot.command('notificaciones', async (ctx: TelegramContext) => {
+        const externalUserId = ctx.from?.id.toString();
+        if (!externalUserId) return;
+
+        try {
+            const linked = await core.isLinked(externalUserId);
+            if (!linked) {
+                await ctx.reply('No estás vinculado. Usa /vincular o /entrar primero.');
+                return;
+            }
+
+            await sendNotificationsView(ctx, core, callbacks, externalUserId);
+        } catch {
+            await ctx.reply('No se pudieron cargar las notificaciones. Inténtalo de nuevo más tarde.');
         }
     });
 }

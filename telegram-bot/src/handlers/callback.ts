@@ -282,7 +282,7 @@ export function registerCallbackHandlers(bot: any, services: BackServices) {
 
                     await ctx.answerCbQuery();
                     await ctx.reply(
-                        `**${codigo} — ${nombre}**Selecciona el **grupo que tienes actualmente**:`,
+                        `**${codigo} — ${nombre}\n\n**Selecciona el **grupo que tienes actualmente**:`,
                         {
                             parse_mode: 'Markdown',
                             reply_markup: { inline_keyboard: rows },
@@ -478,6 +478,58 @@ export function registerCallbackHandlers(bot: any, services: BackServices) {
                         `Te avisaremos cuando alguien la acepte. Puedes revisarla en /misofertas.`,
                         { parse_mode: 'Markdown' },
                     );
+                    break;
+                }
+
+                // ---- Mis ofertas y chat ----
+                case 'myoff:close': {
+                    const offerId = String(payload.data.offerId ?? '');
+                    await core.closeOffer(externalUserId, offerId);
+                    await ctx.answerCbQuery('Oferta cerrada');
+                    await sendMyOffersView(ctx, core, callbacks, externalUserId);
+                    break;
+                }
+
+                case 'myoff:chat': {
+                    const offerId = String(payload.data.offerId ?? '');
+                    await ctx.answerCbQuery('Abriendo chat');
+                    await enterOfferChat(ctx, core, state, chatId, externalUserId, offerId);
+                    break;
+                }
+
+                // ---- Notificaciones ----
+                case 'notif:read': {
+                    const notificationId = String(payload.data.notificationId ?? '');
+                    await core.markNotificationRead(externalUserId, notificationId);
+                    await ctx.answerCbQuery('Marcada como leída');
+                    await sendNotificationsView(ctx, core, callbacks, externalUserId);
+                    break;
+                }
+
+                case 'notif:read_all': {
+                    await core.markAllNotificationsRead(externalUserId);
+                    await ctx.answerCbQuery('Todas leídas');
+                    await sendNotificationsView(ctx, core, callbacks, externalUserId);
+                    break;
+                }
+
+                case 'notif:toggle_enabled': {
+                    const prefs = await core.getNotificationPreferences(externalUserId);
+                    await core.updateNotificationPreferences(externalUserId, {
+                        enabled: !prefs.telegram.enabled,
+                    });
+                    await ctx.answerCbQuery('Preferencia actualizada');
+                    await sendNotificationsView(ctx, core, callbacks, externalUserId);
+                    break;
+                }
+
+                case 'notif:toggle_chat': {
+                    const prefs = await core.getNotificationPreferences(externalUserId);
+                    await core.updateNotificationPreferences(externalUserId, {
+                        chatMessages: !prefs.telegram.chatMessages,
+                    });
+                    await ctx.answerCbQuery('Preferencia de chat actualizada');
+                    await sendNotificationsView(ctx, core, callbacks, externalUserId);
                     break;
                 }
 
@@ -912,6 +964,142 @@ async function showOfferSearchResults(
             },
         ]);
     }
+
+    await ctx.reply(text, {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: rows },
+    });
+}
+
+export async function sendMyOffersView(
+    ctx: TelegramContext,
+    core: BackServices['core'],
+    callbacks: BackServices['callbacks'],
+    externalUserId: string,
+) {
+    const res = await core.listMyOffers(externalUserId);
+    if (res.items.length === 0) {
+        await ctx.reply('No tienes ofertas creadas ni aceptadas todavía. Usa /buscar o /ofertar para empezar.');
+        return;
+    }
+
+    let text = '**Tus ofertas**\n\n';
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+    for (const offer of res.items) {
+        const rolLabel = offer.isCreator ? 'Creada' : 'Aceptada';
+        text +=
+            `• **${offer.asignatura.codigo} — ${offer.asignatura.nombre}** ` +
+            `(**${offer.grupoActual.nombre}** → **${offer.grupoDeseado.nombre}**) · ` +
+            `Estado: \`${offer.status}\` (${rolLabel})\n`;
+
+        const actionRow: Array<{ text: string; callback_data: string }> = [];
+        if (offer.status === 'ACCEPTED') {
+            actionRow.push({
+                text: `Abrir chat (${offer.asignatura.codigo})`,
+                callback_data: await callbacks.encode({ action: 'myoff:chat', data: { offerId: offer.id } }, 900),
+            });
+        }
+        if (offer.status !== 'CLOSED') {
+            actionRow.push({
+                text: `Cerrar (${offer.asignatura.codigo})`,
+                callback_data: await callbacks.encode({ action: 'myoff:close', data: { offerId: offer.id } }, 900),
+            });
+        }
+        if (actionRow.length > 0) rows.push(actionRow);
+    }
+
+    await ctx.reply(text, {
+        parse_mode: 'Markdown',
+        reply_markup: rows.length > 0 ? { inline_keyboard: rows } : undefined,
+    });
+}
+
+export async function enterOfferChat(
+    ctx: TelegramContext,
+    core: BackServices['core'],
+    state: BackServices['state'],
+    chatId: string,
+    externalUserId: string,
+    offerId: string,
+) {
+    const history = await core.getOfferMessages(externalUserId, offerId);
+    await state.set(chatId, { step: 'CHAT:ACTIVO', data: { offerId } }, 3600);
+
+    let text = `**Chat de oferta (\`${offerId}\`)**\n`;
+    text += history.chatOpen
+        ? 'Escribe cualquier mensaje para enviarlo. Usa /salir para terminar.\n\n'
+        : 'Este chat está cerrado en este momento. Usa /salir para volver.\n\n';
+
+    if (history.items.length === 0) {
+        text += '_No hay mensajes previos en este intercambio._';
+    } else {
+        for (const m of history.items.slice(-8)) {
+            const autor = m.isMine ? 'Tú' : m.authorName;
+            text += `• **${autor}**: ${m.content}\n`;
+        }
+    }
+
+    await ctx.reply(text, { parse_mode: 'Markdown' });
+}
+
+export async function sendNotificationsView(
+    ctx: TelegramContext,
+    core: BackServices['core'],
+    callbacks: BackServices['callbacks'],
+    externalUserId: string,
+) {
+    const [page, prefs] = await Promise.all([
+        core.getNotifications(externalUserId),
+        core.getNotificationPreferences(externalUserId),
+    ]);
+
+    let text = '**Notificaciones**\n\n';
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+    if (page.items.length === 0) {
+        text += 'No tienes notificaciones.\n';
+    } else {
+        for (const n of page.items.slice(0, 8)) {
+            const marca = n.isRead ? 'Leída' : 'No leída';
+            text += `• **[${marca}] ${n.asunto}**\n  ${n.contenido}\n`;
+            if (!n.isRead) {
+                rows.push([
+                    {
+                        text: `Marcar leída: ${n.asunto.slice(0, 24)}`,
+                        callback_data: await callbacks.encode(
+                            { action: 'notif:read', data: { notificationId: n.id } },
+                            900,
+                        ),
+                    },
+                ]);
+            }
+        }
+        if (page.items.some((n) => !n.isRead)) {
+            rows.push([
+                {
+                    text: 'Marcar todas como leídas',
+                    callback_data: await callbacks.encode({ action: 'notif:read_all', data: {} }, 900),
+                },
+            ]);
+        }
+    }
+
+    text +=
+        '\n**Preferencias Telegram:**\n' +
+        `• Avisos activos: **${prefs.telegram.enabled ? 'Sí' : 'No'}**\n` +
+        `• Mensajes de chat: **${prefs.telegram.chatMessages ? 'Sí' : 'No'}**`;
+
+    rows.push([
+        {
+            text: `Avisos: ${prefs.telegram.enabled ? 'Desactivar' : 'Activar'}`,
+            callback_data: await callbacks.encode({ action: 'notif:toggle_enabled', data: {} }, 900),
+        },
+        {
+            text: `Chat: ${prefs.telegram.chatMessages ? 'Desactivar' : 'Activar'}`,
+            callback_data: await callbacks.encode({ action: 'notif:toggle_chat', data: {} }, 900),
+        },
+    ]);
 
     await ctx.reply(text, {
         parse_mode: 'Markdown',
