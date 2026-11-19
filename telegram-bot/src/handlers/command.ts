@@ -1,5 +1,6 @@
 import { BackServices } from '../index';
 import { TelegramContext } from '../types/telegram';
+import { sendExpedienteView, startOfferFlow } from './callback';
 
 // Comandos principales del bot telegram
 export function registerCommands(bot: any, services: BackServices) {
@@ -149,10 +150,94 @@ export function registerCommands(bot: any, services: BackServices) {
             '• /buscar - Buscar ofertas de cambio de grupo\n' +
             '• /ofertar - Publicar una oferta directamente\n' +
             '• /misofertas - Ver tus ofertas activas o aceptadas\n' +
-            '• /chat - Entrar al chat de una oferta aceptada\n' +
             '• /notificaciones - Revisar avisos y preferencias\n' +
-            '• /cancelar - Cancelar la operación en curso',
+            '**Gestión Chat:**\n' +
+            '• /chat - Entrar al chat de una oferta aceptada\n' +
+            '• /cancelar - Cancelar la operación en curso\n' +
+            '• /salir - Salir del modo chat',
             { parse_mode: 'Markdown' }
         );
+    });
+
+    // Comando /registro RF-TGB-03
+    bot.command('registro', async (ctx: TelegramContext) => {
+        const externalUserId = ctx.from?.id.toString();
+        const chatId = ctx.chat?.id.toString();
+        if (!externalUserId || !chatId) return;
+
+        try {
+            const linked = await core.isLinked(externalUserId);
+            if (linked) {
+                await ctx.reply('Ya tienes una cuenta vinculada en este chat. Usa /desvincular primero si deseas cambiar de cuenta.');
+                return;
+            }
+
+            await state.set(chatId, {step: 'REGISTRO:ESPERANDO_NOMBRE', data: {} }, 900);
+            await ctx.reply(
+                '**Registro en xChanger**\n\n' + 
+                'Escribe tu **nombre completo** (o /cancelar para salir):',
+                { parse_mode: 'Markdown'}
+            );
+        } catch {
+            await ctx.reply('No se pudo iniciarl el registro en este momento. Inténtalo de nuevo mas tarde.');
+        }
+    })
+
+    // Comando /expediente RF-TGB-04
+    bot.command('expediente', async (ctx: TelegramContext) => {
+        const externalUserId = ctx.from?.id.toString();
+        const chatId = ctx.chat?.id.toString();
+        if (!externalUserId || !chatId) return;
+
+        try {
+            const linked = await core.isLinked(externalUserId);
+            if (!linked) {
+                await ctx.reply('No estás vinculado. Usa /vincular o /entrar primero.');
+                return;
+            }
+
+            await state.clear(chatId);
+            await sendExpedienteView(ctx, core, callbacks, externalUserId);
+        } catch {
+            await ctx.reply('No se pudo cargar tu expediente. Inténtalo de nuevo más tarde.');
+        }
+    });
+
+    // Comando /buscar RF-TGB-05
+    bot.command('buscar', async (ctx: TelegramContext) => {
+        const externalUserId = ctx.from?.id.toString();
+        const chatId = ctx.chat?.id.toString();
+        if (!externalUserId || !chatId) return;
+
+        try {
+            const linked = await core.isLinked(externalUserId);
+            if (!linked) {
+                await ctx.reply('No estás vinculado. Usa /vincular o /entrar primero.');
+                return;
+            }
+
+            await startOfferFlow(ctx, core, state, callbacks, chatId, externalUserId, 'search');
+        } catch {
+            await ctx.reply('No se pudo iniciar la búsqueda de ofertas. Inténtalo de nuevo más tarde.');
+        }
+    });
+
+    // Comando /ofertar EP-R-10
+    bot.command('ofertar', async (ctx: TelegramContext) => {
+        const externalUserId = ctx.from?.id.toString();
+        const chatId = ctx.chat?.id.toString();
+        if (!externalUserId || !chatId) return;
+
+        try {
+            const linked = await core.isLinked(externalUserId);
+            if (!linked) {
+                await ctx.reply('No estás vinculado. Usa /vincular o /entrar primero.');
+                return;
+            }
+
+            await startOfferFlow(ctx, core, state, callbacks, chatId, externalUserId, 'create');
+        } catch {
+            await ctx.reply('No se pudo iniciar la creación de oferta. Inténtalo de nuevo más tarde.');
+        }
     });
 }

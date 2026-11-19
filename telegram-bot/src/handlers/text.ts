@@ -138,7 +138,7 @@ export const registerTextHandler = (bot: any, services: BackServices) => {
                     900
                 );
 
-                await showCarreraPage(ctx, core, services.callbacks, chatId, 0);
+                await showCarreraPage(ctx, core, services.callbacks, 4);
                 return;
             }
 
@@ -201,6 +201,20 @@ export const registerTextHandler = (bot: any, services: BackServices) => {
                     q: text,
                     carreraId,
                     cursoId,
+                    page: 0,
+                });
+                return;
+            }
+
+            // Expediente - Buscar asignatura para añadir
+            if (currentState.step === 'EXP:BUSCAR_ASIGNATURA') {
+                await state.set(
+                    chatId,
+                    { step: 'EXP:BUSCAR_ASIGNATURA', data: { q: text } },
+                    900,
+                );
+                await showSubjectCandidates(ctx, core, services.callbacks, {
+                    q: text,
                     page: 0,
                 });
                 return;
