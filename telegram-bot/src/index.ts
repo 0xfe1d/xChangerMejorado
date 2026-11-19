@@ -49,7 +49,7 @@ bot.use(async (ctx: any, next: () => Promise<void>) => {
 });
 
 registerCommands(bot, services);
-registerTextHandler(bot);
+registerTextHandler(bot, services);
 
 bot.catch((err: unknown, ctx: any) => {
   console.error(`Error en el bot de Telegram: ${err}`);

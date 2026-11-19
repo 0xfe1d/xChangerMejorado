@@ -1,24 +1,5 @@
 import { BackServices } from '../index';
-
-export interface TelegramContext {
-    from?: {
-        id: number;
-        first_name: string;
-        last_name?: string;
-        username?: string;
-    };
-    chat?: { 
-        id: number;
-        type: 'private' | 'group' | 'supergroup' | 'channel';
-    };
-    message?: {
-        message_id: number;
-        text?: string;
-    };
-    updateType: string;
-    reply(text: string, extra?: { parse_mode?: 'Markdown' | 'MarkdownV2' | 'HTML' }): Promise<unknown>;
-    deleteMessage(messageId: number): Promise<boolean>;
-}
+import { TelegramContext } from '../types/telegram';
 
 // Comandos principales del bot telegram
 export function registerCommands(bot: any, services: BackServices) {
@@ -104,101 +85,74 @@ export function registerCommands(bot: any, services: BackServices) {
         await ctx.reply('Por favor, ingresa tu correo electrónico para iniciar sesión (o escribe /cancelar para salir):', { parse_mode: 'Markdown' });
     });
 
-    // Manejador de texto y eliminador de mensajes OPT y MFA - RF-TGB-13
-    bot.on('text', async (ctx: TelegramContext) => {
-        const text = ctx.message?.text?.trim();
-        const user = ctx.from;
-        const chat = ctx.chat;
-        if (!text || !user || !chat) return;
-
-        if (text.startsWith('/')) return;
-
-        const chatId = chat.id.toString();
-        const externalUserId = user.id.toString();
-        const currentState = await state.get(chatId);
-
-        if (!currentState) {
-            await ctx.reply('No hay ninguna operación en curso. Usa /start o /ayuda para obtener más información.');
-            return;
-        }
-
-        const tgIdentify = {
-            externalUserId,
-            chatId,
-            displayName: [user.first_name, user.last_name].filter(Boolean).join(' '),
-            username: user.username || undefined,
-        };
+    // Comando /perfil EP-R-04, EP-C-20
+    bot.command('perfil', async (ctx: TelegramContext) => {
+        const externalUserId = ctx.from?.id.toString();
+        if (!externalUserId) return;
 
         try {
-            // Recibir email y enviar OTP
-            if (currentState.step === 'ENTRAR:ESPERANDO_EMAIL') {
-                const email = text.toLowerCase();
-                if (!email.includes('@')) {
-                    await ctx.reply('El correo electrónico ingresado no es válido. Por favor, inténtalo de nuevo o escribe /cancelar para salir.');
-                    return;
-                }
-
-                const challenge = await core.sendEmailOtp(externalUserId, email);
-                await state.set(
-                    chatId, 
-                    { 
-                        step: 'ENTRAR:ESPERANDO_OTP', 
-                        data: { challengeToken: challenge.challengeToken, email },
-                    },
-                    challenge.expiresIn
-                );
-
-                await ctx.reply(`Se ha enviado un código OTP de ${challenge.codeLength} dígitos a tu correo electrónico (${email}). Por favor, ingresa el código recibido (o escribe /cancelar para salir):`, 
-                    { parse_mode: 'Markdown' }
-                );
+            const linked = await core.isLinked(externalUserId);
+            if (!linked) {
+                await ctx.reply('No estás vinculado. Usa /vincular para enlazar tu cuenta o /entrar para iniciar sesión.');
                 return;
             }
 
-            // Recibir OTP
-            if (currentState.step === 'ENTRAR:ESPERANDO_OTP') {
-                await ctx.deleteMessage(ctx.message!.message_id).catch(() => {});
+            const profile = await core.getProfile(externalUserId);
+            const mfa = (profile as typeof profile & { mfa?: { enabled?: boolean } }).mfa;
 
-                const challengeToken = currentState.data.challengeToken as string;
-                const authResult = await core.verifyEmailOtp(tgIdentify, challengeToken, text);
-
-                if (authResult.kind === 'session') {
-                    await state.clear(chatId);
-                    await ctx.reply(`¡Inicio de sesión exitoso! Ahora estás vinculado y puedes usar los comandos disponibles. ¡Bienvenido/a **${authResult.user.name}**!`, { 
-                        parse_mode: 'Markdown', 
-                    });
-                } else if (authResult.kind === 'mfa_required') {
-                    await state.set(
-                        chatId, 
-                        { 
-                            step: 'ENTRAR:ESPERANDO_MFA', 
-                            data: { challengeToken: authResult.challengeToken },
-                        },
-                        authResult.expiresIn
-                    );
-                    await ctx.reply(`Se requiere autenticación multifactor (MFA). Por favor, ingresa el código MFA recibido (o escribe /cancelar para salir):`,
-                        { parse_mode: 'Markdown' }
-                    );
-                }
-                return;
-            }
-
-            // Recibir MFA
-            if (currentState.step === 'ENTRAR:ESPERANDO_MFA') {
-                await ctx.deleteMessage(ctx.message!.message_id).catch(() => {});
-
-                const challengeToken = currentState.data.challengeToken as string;
-                const factor = text.length <= 8 ? { code: text } : { recoveryCode: text };
-                const session = await core.verifyMfa(tgIdentify, challengeToken, factor);
-
-                await state.clear(chatId);
-                await ctx.reply(`¡Inicio de sesión exitoso! Ahora estás vinculado y puedes usar los comandos disponibles. ¡Bienvenido/a **${session.user.name}**!`, { 
-                    parse_mode: 'Markdown', 
-                });
-                return;
-            }
-        } catch (error: any) {
-            const errorMSG = error?.message || 'Codigo invalido o expirado. Por favor, inténtalo de nuevo.';
-            await ctx.reply(`Ocurrió un error: ${errorMSG}. Por favor, inténtalo de nuevo más tarde o escribe /cancelar para salir.`);
+            await ctx.reply(`**Perfil de usuario**\n\n` +
+                `Nombre: **${profile.name}**\n` +
+                `Correo electrónico: **${profile.email}**\n` +
+                `Rol: ${profile.role}\n` +
+                `MFA: ${mfa?.enabled ? 'Activado' : 'Desactivado'}`,
+                { parse_mode: 'Markdown' }
+            );
+        } catch (error) {
+            await ctx.reply('Ocurrió un error al obtener tu perfil. Por favor, inténtalo de nuevo más tarde.');
         }
+    });
+
+    // Comando /desvincular RF-TGB-09, EP-C-09
+    bot.command('desvincular', async (ctx: TelegramContext) => {
+        const externalUserId = ctx.from?.id.toString();
+        const chatId = ctx.chat?.id.toString();
+        if (!externalUserId || !chatId) return;
+
+        try {
+            const linked = await core.isLinked(externalUserId);
+            if (!linked) {
+                await ctx.reply('No tienes ninguna sesión vinculada actualmente.');
+                return;
+            }
+
+            await core.revoke(externalUserId, 'identity');
+            await state.clear(chatId);
+
+            await ctx.reply('Tu sesión ha sido desvinculada exitosamente. Si deseas volver a vincularte, usa /vincular o /entrar.');
+        } catch (error) {
+            await ctx.reply('Ocurrió un error al intentar desvincular tu sesión. Por favor, inténtalo de nuevo más tarde.');
+        }
+    });
+
+    // Comando /ayuda
+    bot.command('ayuda', async (ctx: TelegramContext) => {
+        await ctx.reply('**Comandos disponibles:**\n\n' +
+            '**Cuenta y Acceso:**\n' +
+            '• /start - Menú de bienvenida\n' +
+            '• /vincular - Enlazar cuenta mediante código web\n' +
+            '• /entrar - Iniciar sesión con correo y OTP\n' +
+            '• /registro - Crear cuenta nueva sin contraseña\n' +
+            '• /perfil - Ver tus datos y estado MFA\n' +
+            '• /desvincular - Cerrar sesión y desvincular Telegram\n\n' +
+            '**Gestión Académica y Ofertas:**\n' +
+            '• /expediente - Consultar y editar tus asignaturas\n' +
+            '• /buscar - Buscar ofertas de cambio de grupo\n' +
+            '• /ofertar - Publicar una oferta directamente\n' +
+            '• /misofertas - Ver tus ofertas activas o aceptadas\n' +
+            '• /chat - Entrar al chat de una oferta aceptada\n' +
+            '• /notificaciones - Revisar avisos y preferencias\n' +
+            '• /cancelar - Cancelar la operación en curso',
+            { parse_mode: 'Markdown' }
+        );
     });
 }
