@@ -64,7 +64,7 @@ export const registerTextHandler = (bot: any, services: BackServices) => {
 
                 if (authResult.kind === 'session') {
                     await state.clear(chatId);
-                    await ctx.reply(`¡Inicio de sesión exitoso! Ahora estás vinculado y puedes usar los comandos disponibles. ¡Bienvenido/a **${authResult.user.name}**!`, { 
+                    await ctx.reply(`¡Inicio de sesión exitoso! Ahora estás vinculado. ¡Bienvenido/a **${authResult.user.name}**!\n\nEscribe /ayuda para consultar los comandos disponibles.`, {
                         parse_mode: 'Markdown', 
                     });
                 } else if (authResult.kind === 'mfa_required') {
@@ -93,7 +93,7 @@ export const registerTextHandler = (bot: any, services: BackServices) => {
                 const session = await core.verifyMfa(tgIdentify, challengeToken, factor);
 
                 await state.clear(chatId);
-                await ctx.reply(`¡Inicio de sesión exitoso! Ahora estás vinculado y puedes usar los comandos disponibles. ¡Bienvenido/a **${session.user.name}**!`, { 
+                await ctx.reply(`¡Inicio de sesión exitoso! Ahora estás vinculado. ¡Bienvenido/a **${session.user.name}**!\n\nEscribe /ayuda para consultar los comandos disponibles.`, {
                     parse_mode: 'Markdown', 
                 });
                 return;

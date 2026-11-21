@@ -5,12 +5,41 @@ import { enterOfferChat, sendExpedienteView, sendMyOffersView, sendNotifications
 // Comandos principales del bot telegram
 export function registerCommands(bot: any, services: BackServices) {
     const { core, state, callbacks } = services;
+    const commandNames = new Set([
+        'start',
+        'vincular',
+        'cancelar',
+        'entrar',
+        'perfil',
+        'desvincular',
+        'ayuda',
+        'registro',
+        'expediente',
+        'buscar',
+        'ofertar',
+        'misofertas',
+        'chat',
+        'salir',
+        'notificaciones',
+    ]);
 
     // RF-TGB-12: Solo operar en chats privados
     bot.use(async (ctx: TelegramContext, next: () => Promise<void>) => {
         if (ctx.chat?.type && ctx.chat.type !== 'private') {
             await ctx.reply('Este bot solo funciona en chats privados. Por favor, envíame un mensaje directo.');
             return;
+        }
+        await next();
+    });
+
+    // Un comando nuevo abandona el flujo conversacional actual. /salir necesita
+    // conservarlo para comprobar si el usuario estaba dentro de un chat.
+    bot.use(async (ctx: TelegramContext, next: () => Promise<void>) => {
+        const text = ctx.message?.text;
+        const chatId = ctx.chat?.id.toString();
+        const command = text?.match(/^\/([a-z0-9_]+)(?:@\w+)?(?:\s|$)/i)?.[1].toLowerCase();
+        if (chatId && commandNames.has(command ?? '') && command !== 'cancelar' && command !== 'salir') {
+            await state.clear(chatId);
         }
         await next();
     });
@@ -127,7 +156,6 @@ export function registerCommands(bot: any, services: BackServices) {
             }
 
             await core.revoke(externalUserId, 'identity');
-            await state.clear(chatId);
 
             await ctx.reply('Tu sesión ha sido desvinculada exitosamente. Si deseas volver a vincularte, usa /vincular o /entrar.');
         } catch (error) {
@@ -196,7 +224,6 @@ export function registerCommands(bot: any, services: BackServices) {
                 return;
             }
 
-            await state.clear(chatId);
             await sendExpedienteView(ctx, core, callbacks, externalUserId);
         } catch {
             await ctx.reply('No se pudo cargar tu expediente. Inténtalo de nuevo más tarde.');
