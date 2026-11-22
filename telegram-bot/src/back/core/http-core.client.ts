@@ -25,6 +25,7 @@ import {
   TelegramIdentityInput,
   UserProfile,
 } from '../../contracts';
+import { RedisPendingLinkStore } from '../storage/redis-stores';
 import { RedisCatalogCache } from './catalog-cache';
 import { CoreHttpConfig, CoreHttpTransport } from './core-http';
 import { ChannelSessionManager, CoreIssuedSessionPayload } from './session-manager';
@@ -45,6 +46,7 @@ type LegacySubjectItem = AsignaturaSearchItem & {
 
 export interface HttpCoreClientConfig extends CoreHttpConfig {
   catalogCache?: RedisCatalogCache;
+  pendingLinks?: RedisPendingLinkStore;
 }
 
 function adaptLegacySubjects(
@@ -76,11 +78,13 @@ export class HttpCoreClient implements CoreClient {
   private readonly http: CoreHttpTransport;
   private readonly sessionManager: ChannelSessionManager;
   private readonly catalogCache?: RedisCatalogCache;
+  private readonly pendingLinks?: RedisPendingLinkStore;
 
   constructor(config: HttpCoreClientConfig) {
     this.http = new CoreHttpTransport(config);
     this.sessionManager = config.sessionManager;
     this.catalogCache = config.catalogCache;
+    this.pendingLinks = config.pendingLinks;
   }
 
   private async issueChannelSession(
@@ -114,6 +118,20 @@ export class HttpCoreClient implements CoreClient {
         },
       },
     );
+    if (this.pendingLinks) {
+      await this.pendingLinks.save(
+        tg.externalUserId,
+        {
+          deviceCode: data.deviceCode,
+          userCode: data.userCode,
+          chatId: tg.chatId,
+          displayName: tg.displayName,
+          ...(tg.username ? { username: tg.username } : {}),
+          createdAt: new Date().toISOString(),
+        },
+        data.expiresIn,
+      );
+    }
     return data;
   }
 

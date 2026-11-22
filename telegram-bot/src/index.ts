@@ -119,6 +119,7 @@ export function createBackServices(overrides: Partial<BotRuntimeConfig> = {}): B
     serviceAuth,
     sessionManager,
     catalogCache,
+    pendingLinks,
   });
 
   return {

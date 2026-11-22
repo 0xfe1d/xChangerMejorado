@@ -258,7 +258,12 @@ export class RedisEventStreamConsumer {
           }
         } catch (err) {
           if (this.stopped) break;
-          console.error('[telegram-bot:events]', (err as Error).message);
+          const message = (err as Error).message;
+          if (message.includes('NOGROUP')) {
+            await this.ensureGroup().catch(() => undefined);
+          } else {
+            console.error('[telegram-bot:events]', message);
+          }
           await new Promise((resolve) => setTimeout(resolve, ERROR_BACKOFF_MS));
         }
       }
