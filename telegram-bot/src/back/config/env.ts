@@ -14,6 +14,8 @@ const envSchema = z
     USE_MOCK_CORE: boolFromString('true'),
 
     TELEGRAM_BOT_TOKEN: z.string().default(''),
+    TELEGRAM_BOT_MODE: z.enum(['webhook', 'polling']).default('webhook'),
+    TELEGRAM_WEBHOOK_URL: z.string().default(''),
     TELEGRAM_WEBHOOK_SECRET: z.string().min(1).max(256).default('dev-webhook-secret'),
 
     CORE_API_URL: z.string().url().default('http://localhost:4000/api/v1'),
@@ -46,6 +48,26 @@ const envSchema = z
           path: ['TOKEN_ENC_KEY'],
           message: 'TOKEN_ENC_KEY es obligatorio cuando USE_MOCK_CORE=false',
         });
+      }
+      if (data.NODE_ENV === 'production') {
+        if (!data.TELEGRAM_BOT_TOKEN.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['TELEGRAM_BOT_TOKEN'],
+            message: 'TELEGRAM_BOT_TOKEN es obligatorio en producción cuando USE_MOCK_CORE=false',
+          });
+        }
+        if (
+          data.TELEGRAM_WEBHOOK_SECRET === 'dev-webhook-secret' ||
+          data.TELEGRAM_WEBHOOK_SECRET.length < 16
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['TELEGRAM_WEBHOOK_SECRET'],
+            message:
+              'TELEGRAM_WEBHOOK_SECRET debe ser un secreto no por defecto de >= 16 caracteres en producción',
+          });
+        }
       }
     }
   });

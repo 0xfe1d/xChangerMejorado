@@ -149,6 +149,8 @@ services:
       SERVICE_CLIENT_SECRET: "${SERVICE_CLIENT_SECRET:-}"
       TOKEN_ENC_KEY: "${TOKEN_ENC_KEY:-}"
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_BOT_MODE: "${TELEGRAM_BOT_MODE:-webhook}"
+      TELEGRAM_WEBHOOK_URL: "${APP_URL:-http://localhost}/telegram/webhook"
       TELEGRAM_WEBHOOK_SECRET: "${TELEGRAM_WEBHOOK_SECRET:-dev-webhook-secret}"
     depends_on:
       bot-db:

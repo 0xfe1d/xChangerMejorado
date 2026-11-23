@@ -21,6 +21,7 @@ import {
 import { OutboundQueue } from './back/telegram/outbound-queue';
 import { BotEventHandlers, CallbackStore, CoreClient, StateStore } from './contracts';
 import { registerCommands } from './handlers/command';
+import { createEventHandlers } from './handlers/events';
 import { registerTextHandler } from './handlers/text';
 import { registerCallbackHandlers } from './handlers/callback';
 
@@ -30,6 +31,8 @@ interface TelegramBot {
   on(event: string, handler: (ctx: any) => Promise<void>): void;
   catch(handler: (error: unknown, ctx: any) => void): void;
   handleUpdate(update: TelegramUpdate): Promise<void>;
+  launch?: () => Promise<void>;
+  stop?: (reason?: string) => void;
 }
 
 const { Telegraf } = require('telegraf') as {
@@ -62,7 +65,7 @@ export interface BackServices {
 
 export interface StartBotRuntimeOptions {
   onUpdate?: (update: TelegramUpdate) => Promise<void> | void;
-  eventHandlers?: BotEventHandlers;
+  eventHandlers?: BotEventHandlers | ((services: BackServices) => BotEventHandlers);
   port?: number;
   config?: Partial<BotRuntimeConfig>;
 }
@@ -166,8 +169,13 @@ export async function startBotRuntime(options: StartBotRuntimeOptions): Promise<
   if (!cfg.USE_MOCK_CORE) {
     await initBotDatabase();
 
+    const resolvedEventHandlers =
+      typeof options.eventHandlers === 'function'
+        ? options.eventHandlers(services)
+        : options.eventHandlers;
+
     if (
-      options.eventHandlers &&
+      resolvedEventHandlers &&
       services.accountsRepo &&
       services.sessionManager &&
       services.pendingLinks &&
@@ -180,7 +188,7 @@ export async function startBotRuntime(options: StartBotRuntimeOptions): Promise<
         pendingLinkStore: services.pendingLinks,
         catalogCache: services.catalogCache,
         coreClient: services.core,
-        handlers: options.eventHandlers,
+        handlers: resolvedEventHandlers,
       });
       consumer = new RedisEventStreamConsumer({
         redis: getRedis(),
@@ -209,6 +217,13 @@ export async function startBotRuntime(options: StartBotRuntimeOptions): Promise<
   const port = await server.listen(options.port ?? cfg.PORT);
 
   const stop = async () => {
+    if (cfg.TELEGRAM_BOT_MODE === 'polling' && bot?.stop) {
+      try {
+        bot.stop('STOP');
+      } catch {
+        // ignorar si no estaba en polling activo
+      }
+    }
     await consumer?.stop();
     await server.close();
     if (!cfg.USE_MOCK_CORE) {
@@ -216,15 +231,66 @@ export async function startBotRuntime(options: StartBotRuntimeOptions): Promise<
     }
   };
 
+  if (cfg.TELEGRAM_BOT_MODE === 'polling' && bot?.launch) {
+    console.log('[telegram-bot] iniciando polling de Telegram...');
+    bot.launch().catch((err) => {
+      console.error('[telegram-bot] error al iniciar polling de Telegram:', err);
+    });
+  }
+
   return { services, server, port, stop };
 }
 
+export const BOT_COMMANDS = [
+  { command: 'start', description: 'Menú de bienvenida' },
+  { command: 'buscar', description: 'Buscar ofertas de cambio de grupo' },
+  { command: 'ofertar', description: 'Publicar una oferta de cambio' },
+  { command: 'misofertas', description: 'Ver tus ofertas activas e historial' },
+  { command: 'expediente', description: 'Consultar y editar tus asignaturas' },
+  { command: 'chat', description: 'Abrir el chat de una oferta aceptada' },
+  { command: 'notificaciones', description: 'Revisar avisos y preferencias' },
+  { command: 'perfil', description: 'Ver tus datos y estado MFA' },
+  { command: 'vincular', description: 'Enlazar cuenta con la web' },
+  { command: 'entrar', description: 'Iniciar sesión con correo y OTP' },
+  { command: 'registro', description: 'Crear cuenta nueva desde Telegram' },
+  { command: 'cancelar', description: 'Cancelar la operación en curso' },
+  { command: 'salir', description: 'Salir del modo chat' },
+  { command: 'desvincular', description: 'Cerrar sesión y desvincular Telegram' },
+  { command: 'ayuda', description: 'Ver todos los comandos disponibles' },
+];
+
 if (require.main === module) {
-  startBotRuntime({})
+  startBotRuntime({
+    eventHandlers: (services) => createEventHandlers(services.outbound),
+  })
     .then((runtime) => {
       console.log(
-        `[telegram-bot] escuchando en puerto ${runtime.port} (USE_MOCK_CORE=${env.USE_MOCK_CORE})`,
+        `[telegram-bot] escuchando en puerto ${runtime.port} (USE_MOCK_CORE=${env.USE_MOCK_CORE}, MODE=${env.TELEGRAM_BOT_MODE})`,
       );
+      if (env.TELEGRAM_BOT_TOKEN) {
+        runtime.services.outbound
+          .callTelegramApi('commands-init', 'setMyCommands', { commands: BOT_COMMANDS })
+          .catch((err) => {
+            console.error('[telegram-bot] no se pudo registrar menú de comandos:', err);
+          });
+      }
+      if (
+        env.TELEGRAM_BOT_MODE === 'webhook' &&
+        env.TELEGRAM_BOT_TOKEN &&
+        env.TELEGRAM_WEBHOOK_URL.startsWith('https://')
+      ) {
+        runtime.services.outbound
+          .callTelegramApi('webhook-init', 'setWebhook', {
+            url: env.TELEGRAM_WEBHOOK_URL,
+            secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+          })
+          .then(() => {
+            console.log(`[telegram-bot] webhook registrado en ${env.TELEGRAM_WEBHOOK_URL}`);
+          })
+          .catch((err) => {
+            console.error('[telegram-bot] no se pudo registrar webhook automáticamente:', err);
+          });
+      }
       const shutdown = () => {
         runtime
           .stop()
@@ -240,12 +306,54 @@ if (require.main === module) {
     });
 }
 
+/**
+ * Convierte sintaxis estilo CommonMark (`**negrita**`, `` `código` ``, `_cursiva_`) usada por los handlers
+ * a HTML seguro de Telegram sin romper guiones bajos dentro de códigos, URLs o correos.
+ */
+export function markdownLikeToSafeHtml(text: string): string {
+  const escapeHtml = (value: string) =>
+    value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  return text
+    .split(/(`[^`]+`)/g)
+    .map((segment) => {
+      if (segment.startsWith('`') && segment.endsWith('`') && segment.length >= 2) {
+        return `<code>${escapeHtml(segment.slice(1, -1))}</code>`;
+      }
+      return escapeHtml(segment)
+        .replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>')
+        .replace(/(^|[\s(])_([^_\n]+?)_(?=$|[\s.,;:!?)])/g, '$1<i>$2</i>');
+    })
+    .join('');
+}
+
 function createTelegramBot(token: string, services: BackServices): TelegramBot {
   const bot = new Telegraf(token);
   bot.use(async (ctx, next) => {
     const start = Date.now();
     const user = ctx.from;
     console.log(`[Telegram] Update: ${ctx.updateType} | User: ${user?.id} (@${user?.username || 'sin_username'})`);
+
+    if (typeof ctx.reply === 'function') {
+      const originalReply = ctx.reply.bind(ctx);
+      ctx.reply = async (text: string, extra?: Record<string, unknown>) => {
+        if (typeof text === 'string' && extra?.parse_mode === 'Markdown') {
+          const htmlExtra = { ...extra, parse_mode: 'HTML' as const };
+          try {
+            return await originalReply(markdownLikeToSafeHtml(text), htmlExtra);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.toLowerCase().includes("can't parse entities")) {
+              const { parse_mode: _ignored, ...plainExtra } = extra;
+              return await originalReply(text, plainExtra);
+            }
+            throw err;
+          }
+        }
+        return await originalReply(text, extra);
+      };
+    }
+
     await next();
     console.log(`[Telegram] Handled in ${Date.now() - start}ms`);
   });
