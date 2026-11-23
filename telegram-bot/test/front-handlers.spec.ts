@@ -1,7 +1,10 @@
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { OutboundQueue } from '../src/back/telegram/outbound-queue';
+import { registerCallbackHandlers, sendMyOffersView } from '../src/handlers/callback';
 import { registerCommands } from '../src/handlers/command';
+import { createEventHandlers } from '../src/handlers/events';
 import { registerTextHandler } from '../src/handlers/text';
+import { markdownLikeToSafeHtml } from '../src/index';
 
 function createHandlerHarness(initialLinked = false) {
   const middlewares: Array<(ctx: any, next: () => Promise<void>) => Promise<void>> = [];
@@ -111,7 +114,7 @@ function createHandlerHarness(initialLinked = false) {
     }
   }
 
-  return { stateStore, makeCtx, runCommand, runText };
+  return { stateStore, core, makeCtx, runCommand, runText };
 }
 
 describe('Handlers del bot - Guardias, estados y validaciones', () => {
@@ -171,5 +174,240 @@ describe('Handlers del bot - Guardias, estados y validaciones', () => {
     assert.deepEqual(deleted, [99]);
     assert.equal(stateStore.has('1001'), false);
     assert.match(replies[0], /Inicio de sesión exitoso/i);
+  });
+
+  it('/vincular oculta deviceCode y bloquea si ya está vinculado', async () => {
+    const anon = createHandlerHarness(false);
+    const { ctx: c1, replies: r1 } = anon.makeCtx({ text: '/vincular' });
+    await anon.runCommand('vincular', c1);
+    assert.match(r1[0], /ABCD-1234/);
+    assert.equal(r1[0].includes('dev_123'), false);
+
+    const linked = createHandlerHarness(true);
+    const { ctx: c2, replies: r2 } = linked.makeCtx({ text: '/vincular' });
+    await linked.runCommand('vincular', c2);
+    assert.match(r2[0], /Ya tienes una cuenta vinculada/i);
+  });
+
+  it('/perfil detecta mfaEnabled del Core real', async () => {
+    const { core, makeCtx, runCommand } = createHandlerHarness(true);
+    core.getProfile = async () => ({
+      id: 'u1',
+      name: 'Oscar',
+      email: 'oscar@alumnos.unican.es',
+      role: 'ESTUDIANTE',
+      mfaEnabled: true,
+    });
+
+    const { ctx, replies } = makeCtx({ text: '/perfil' });
+    await runCommand('perfil', ctx);
+    assert.match(replies[0], /MFA: Activado/);
+    assert.match(replies[0], /Rol: Estudiante/);
+  });
+
+  it('markdownLikeToSafeHtml convierte negrita/código/cursiva sin romper guiones bajos', () => {
+    const html = markdownLikeToSafeHtml(
+      '**Perfil** de `code_123_abc` para juan_perez@alumnos.unican.es · _Sin mensajes previos_',
+    );
+    assert.equal(
+      html,
+      '<b>Perfil</b> de <code>code_123_abc</code> para juan_perez@alumnos.unican.es · <i>Sin mensajes previos</i>',
+    );
+  });
+
+  it('createEventHandlers evita duplicar CHAT_MESSAGE y entrega avisos de otros usuarios', async () => {
+    const sent: Array<{ chatId: string | number; text: string }> = [];
+    const outbound = {
+      sendMessage: jest.fn(async (chatId: string | number, text: string) => {
+        sent.push({ chatId, text });
+      }),
+    } as unknown as OutboundQueue;
+
+    const handlers = createEventHandlers(outbound);
+    await handlers.onNotificationCreated('chat-1', {
+      notificationId: 'n1',
+      userId: 'u1',
+      asunto: 'Nuevo mensaje',
+      contenido: 'Vista previa',
+      kind: 'CHAT_MESSAGE',
+      refs: { offerId: 'off1' },
+    });
+    assert.equal(sent.length, 0);
+
+    await handlers.onNotificationCreated('chat-1', {
+      notificationId: 'n2',
+      userId: 'u1',
+      asunto: 'Oferta aceptada',
+      contenido: 'Ana aceptó tu oferta',
+      kind: 'OFFER_ACCEPTED',
+      refs: { offerId: 'off1' },
+    });
+    assert.equal(sent.length, 1);
+
+    await handlers.onOfferMessageCreated('chat-1', 'u1', {
+      offerId: 'off1',
+      messageId: 'm1',
+      authorId: 'u2',
+      authorName: 'Ana',
+      content: 'Hola',
+      timestamp: new Date().toISOString(),
+    });
+    assert.equal(sent.length, 2);
+  });
+
+  it('evita duplicar ofertas OPEN idénticas y muestra estados amigables en /misofertas', async () => {
+    const callbacksMap = new Map<string, { action: string; data: Record<string, unknown> }>();
+    const callbackHandlers: Array<(ctx: any) => Promise<void>> = [];
+    const bot = {
+      use: () => undefined,
+      command: () => undefined,
+      on: (event: string, fn: (ctx: any) => Promise<void>) => {
+        if (event === 'callback_query') callbackHandlers.push(fn);
+      },
+    };
+
+    const existingOffer = {
+      id: 'off_1',
+      createdAt: new Date().toISOString(),
+      status: 'OPEN' as const,
+      asignatura: { id: 'asig_1', codigo: 'GII-101', nombre: 'Programación I' },
+      grupoActual: { id: 'grp_a', nombre: 'Grupo A (Mañana)' },
+      grupoDeseado: { id: 'grp_b', nombre: 'Grupo B (Tarde)' },
+      isCreator: true,
+      counterpart: null,
+    };
+
+    let createCalls = 0;
+    const core: any = {
+      listMyOffers: async () => ({ items: [existingOffer], nextCursor: null }),
+      createOffer: async () => {
+        createCalls += 1;
+        return existingOffer;
+      },
+    };
+
+    const stateStore = new Map<string, { step: string; data: Record<string, unknown> }>([
+      [
+        '1001',
+        {
+          step: 'OFERTA:GRUPO_DESEADO',
+          data: {
+            mode: 'create',
+            asignaturaId: 'asig_1',
+            codigo: 'GII-101',
+            nombre: 'Programación I',
+            grupoActualId: 'grp_a',
+            grupoActualNombre: 'Grupo A (Mañana)',
+          },
+        },
+      ],
+    ]);
+    const state: any = {
+      get: async (id: string) => stateStore.get(id) ?? null,
+      set: async (id: string, val: any) => stateStore.set(id, val),
+      clear: async (id: string) => stateStore.delete(id),
+    };
+    const callbacks: any = {
+      encode: async (payload: { action: string; data: Record<string, unknown> }) => {
+        const key = `cb:${callbacksMap.size + 1}`;
+        callbacksMap.set(key, payload);
+        return key;
+      },
+      decode: async (key: string) => callbacksMap.get(key) ?? null,
+    };
+
+    registerCallbackHandlers(bot, { core, state, callbacks } as any);
+    const key = await callbacks.encode({
+      action: 'off:deseado_select',
+      data: { grupoDeseadoId: 'grp_b', grupoDeseadoNombre: 'Grupo B (Tarde)' },
+    });
+
+    const replies: string[] = [];
+    const cbAnswers: string[] = [];
+    await callbackHandlers[0]({
+      chat: { id: 1001, type: 'private' },
+      from: { id: 2002, first_name: 'Oscar' },
+      callbackQuery: { id: 'q1', data: key },
+      answerCbQuery: async (msg?: string) => cbAnswers.push(msg ?? ''),
+      reply: async (msg: string) => replies.push(msg),
+    });
+
+    assert.equal(createCalls, 0);
+    assert.match(cbAnswers[0], /Ya tienes esa oferta abierta/i);
+    assert.match(replies[0], /Ya tienes una oferta abierta con esos mismos grupos/i);
+
+    const viewReplies: string[] = [];
+    await sendMyOffersView(
+      {
+        chat: { id: 1001, type: 'private' },
+        from: { id: 2002, first_name: 'Oscar' },
+        updateType: 'message',
+        reply: async (msg: string) => viewReplies.push(msg),
+        deleteMessage: async () => true,
+        answerCbQuery: async () => true,
+      },
+      core,
+      callbacks,
+      '2002',
+    );
+    assert.match(viewReplies[0], /Abierta/);
+    assert.match(viewReplies[0], /Publicada por ti/);
+    assert.equal(viewReplies[0].includes('OPEN'), false);
+  });
+
+  it('responde ante comandos desconocidos sugiriendo /ayuda', async () => {
+    const { makeCtx, runText } = createHandlerHarness();
+    const { ctx, replies } = makeCtx({ text: '/inventado' });
+    await runText(ctx);
+
+    assert.equal(replies.length, 1);
+    assert.match(replies[0], /Comando no reconocido/i);
+    assert.match(replies[0], /\/ayuda/);
+  });
+
+  it('responde cuando el usuario escribe texto en pasos que requieren pulsar botón', async () => {
+    const { stateStore, makeCtx, runText } = createHandlerHarness();
+    stateStore.set('1001', { step: 'REGISTRO:ELEGIR_CARRERA', data: { name: 'Oscar' } });
+
+    const { ctx, replies } = makeCtx({ text: '1' });
+    await runText(ctx);
+
+    assert.equal(replies.length, 1);
+    assert.match(replies[0], /pulsa uno de los botones/i);
+    assert.match(replies[0], /\/cancelar/);
+  });
+
+  it('muestra la contraparte en /misofertas cuando la oferta está aceptada', async () => {
+    const acceptedOffer = {
+      id: 'off_acc',
+      createdAt: new Date().toISOString(),
+      status: 'ACCEPTED' as const,
+      asignatura: { id: 'asig_1', codigo: 'GII-101', nombre: 'Programación I' },
+      grupoActual: { id: 'grp_a', nombre: 'Grupo A' },
+      grupoDeseado: { id: 'grp_b', nombre: 'Grupo B' },
+      isCreator: true,
+      counterpart: { name: 'Ana García' },
+    };
+    const core: any = {
+      listMyOffers: async () => ({ items: [acceptedOffer], nextCursor: null }),
+    };
+    const callbacks: any = { encode: async () => 'cb:1' };
+    const viewReplies: string[] = [];
+
+    await sendMyOffersView(
+      {
+        chat: { id: 1001, type: 'private' },
+        from: { id: 2002, first_name: 'Oscar' },
+        updateType: 'message',
+        reply: async (msg: string) => viewReplies.push(msg),
+        deleteMessage: async () => true,
+        answerCbQuery: async () => true,
+      },
+      core,
+      callbacks,
+      '2002',
+    );
+
+    assert.match(viewReplies[0], /con \*\*Ana García\*\*/);
   });
 });
