@@ -1,71 +1,260 @@
-import { env } from './config/env';
-import { CallbackStore, CoreClient, StateStore } from './contracts';
-import { MockCoreClient } from './mocks/mock-core.client';
-import { MemoryCallbackStore, MemoryStateStore } from './state/memory-stores';
+import { env } from './back/config/env';
+import { closeBotDb, getBotDb, initBotDatabase } from './back/config/db';
+import { closeRedis, createRedisConnection, getRedis } from './back/config/redis';
+import { RedisCatalogCache } from './back/core/catalog-cache';
+import { HttpCoreClient } from './back/core/http-core.client';
+import { ServiceAuthManager } from './back/core/service-auth';
+import { ChannelSessionManager } from './back/core/session-manager';
+import { TokenCipher } from './back/crypto/token-cipher';
+import { RedisEventStreamConsumer } from './back/events/event-consumer';
+import { BotEventDispatcher } from './back/events/event-dispatcher';
+import { BotHttpServer, TelegramUpdate } from './back/http/webhook-server';
+import { MockCoreClient } from './back/mocks/mock-core.client';
+import { MemoryCallbackStore, MemoryStateStore } from './back/state/memory-stores';
+import { TelegramAccountsRepository } from './back/storage/accounts.repo';
+import {
+  RedisCallbackStore,
+  RedisDedupStore,
+  RedisPendingLinkStore,
+  RedisStateStore,
+} from './back/storage/redis-stores';
+import { OutboundQueue } from './back/telegram/outbound-queue';
+import { BotEventHandlers, CallbackStore, CoreClient, StateStore } from './contracts';
 import { registerCommands } from './handlers/command';
 import { registerTextHandler } from './handlers/text';
 import { registerCallbackHandlers } from './handlers/callback';
 
-declare const require: (moduleName: string) => unknown;
-declare const console: { log(...data: unknown[]): void; error(...data: unknown[]): void; };
-declare const process: { once(event: 'SIGINT' | 'SIGTERM', listener: () => void): void; };
-
-const { Telegraf } = require('telegraf') as {
-  Telegraf: new (token: string) => any;
+interface TelegramBot {
+  use(handler: (ctx: any, next: () => Promise<void>) => Promise<void>): void;
+  command(command: string, handler: (ctx: any) => Promise<void>): void;
+  on(event: string, handler: (ctx: any) => Promise<void>): void;
+  catch(handler: (error: unknown, ctx: any) => void): void;
+  handleUpdate(update: TelegramUpdate): Promise<void>;
 }
 
+const { Telegraf } = require('telegraf') as {
+  Telegraf: new (token: string) => TelegramBot;
+};
+
 export * from './contracts';
+export { BotHttpServer, HealthzStatus, TelegramUpdate } from './back/http/webhook-server';
+export { OutboundQueue, TelegramRateLimitError } from './back/telegram/outbound-queue';
+export { HttpCoreClient } from './back/core/http-core.client';
+export { RedisCatalogCache } from './back/core/catalog-cache';
+export { ServiceAuthManager } from './back/core/service-auth';
+export { ChannelSessionManager } from './back/core/session-manager';
+export { BotEventDispatcher } from './back/events/event-dispatcher';
+export { RedisEventStreamConsumer } from './back/events/event-consumer';
+
+export type BotRuntimeConfig = typeof env;
 
 export interface BackServices {
   core: CoreClient;
   state: StateStore;
   callbacks: CallbackStore;
+  outbound: OutboundQueue;
+  accountsRepo?: TelegramAccountsRepository;
+  pendingLinks?: RedisPendingLinkStore;
+  dedup?: RedisDedupStore;
+  sessionManager?: ChannelSessionManager;
+  catalogCache?: RedisCatalogCache;
+}
+
+export interface StartBotRuntimeOptions {
+  onUpdate?: (update: TelegramUpdate) => Promise<void> | void;
+  eventHandlers?: BotEventHandlers;
+  port?: number;
+  config?: Partial<BotRuntimeConfig>;
+}
+
+export interface BotRuntime {
+  services: BackServices;
+  server: BotHttpServer;
+  port: number;
+  stop: () => Promise<void>;
+}
+
+async function pingCoreHealth(coreApiUrl: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2_000);
+  try {
+    const res = await fetch(`${coreApiUrl.replace(/\/+$/, '')}/health`, {
+      signal: controller.signal,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
- * Inicializa los servicios de infraestructura del microservicio
- * (cliente del core y almacenes de estado y callbacks).
+ * Inicializa los servicios de infraestructura del microservicio.
+ * Con `USE_MOCK_CORE=true` devuelve implementación en memoria; con `false`,
+ * conecta `HttpCoreClient`, Redis (`tg:*`) y `bot-db`.
  */
-export function createBackServices(): BackServices {
-  if (!env.USE_MOCK_CORE) {
-    throw new Error('El modo real (USE_MOCK_CORE=false) aún no está implementado. Usa USE_MOCK_CORE=true.');
+export function createBackServices(overrides: Partial<BotRuntimeConfig> = {}): BackServices {
+  const cfg: BotRuntimeConfig = { ...env, ...overrides };
+  const outbound = new OutboundQueue({ botToken: cfg.TELEGRAM_BOT_TOKEN });
+
+  if (cfg.USE_MOCK_CORE) {
+    return {
+      core: new MockCoreClient(),
+      state: new MemoryStateStore(),
+      callbacks: new MemoryCallbackStore(),
+      outbound,
+    };
   }
 
-  const core: CoreClient = new MockCoreClient();
-  const state: StateStore = new MemoryStateStore();
-  const callbacks: CallbackStore = new MemoryCallbackStore();
-  return { core, state, callbacks };
-}
+  const redis = getRedis();
+  const db = getBotDb();
+  const cipher = new TokenCipher(cfg.TOKEN_ENC_KEY);
+  const accountsRepo = new TelegramAccountsRepository(db, cipher);
 
-const bot = new Telegraf(env.TELEGRAM_BOT_TOKEN);
-const services = createBackServices();
+  const state = new RedisStateStore(redis);
+  const callbacks = new RedisCallbackStore(redis);
+  const pendingLinks = new RedisPendingLinkStore(redis);
+  const dedup = new RedisDedupStore(redis);
 
-// Middleware para loguear información de cada update recibido y el tiempo que tarda en procesarse. 
-bot.use(async (ctx: any, next: () => Promise<void>) => {
-  const start = Date.now();
-  const user = ctx.from;
-  console.log(`[Telegram] Update: ${ctx.updateType} | User: ${user?.id} (@${user?.username || 'sin_username'})`);
-  await next();
-  console.log(`[Telegram] Handled in ${Date.now() - start}ms`);
-});
-
-registerCommands(bot, services);
-registerTextHandler(bot, services);
-registerCallbackHandlers(bot, services);
-
-bot.catch((err: unknown, ctx: any) => {
-  console.error(`Error en el bot de Telegram: ${err}`);
-});
-
-
-// ---- Arranque del bot ----
-bot.launch()
-  .then(() => {
-    console.log(`Bot de Telegram de xChanger arrancado (Mock Mode: ${env.USE_MOCK_CORE})`);
-  })
-  .catch((error: unknown) => {
-    console.error('Error al iniciar el bot:', error);
+  const serviceAuth = new ServiceAuthManager({
+    coreApiUrl: cfg.CORE_API_URL,
+    clientId: cfg.SERVICE_CLIENT_ID,
+    clientSecret: cfg.SERVICE_CLIENT_SECRET,
+  });
+  const sessionManager = new ChannelSessionManager({
+    coreApiUrl: cfg.CORE_API_URL,
+    redis,
+    accountsRepo,
+    serviceAuth,
+  });
+  const catalogCache = new RedisCatalogCache(redis);
+  const core = new HttpCoreClient({
+    coreApiUrl: cfg.CORE_API_URL,
+    serviceAuth,
+    sessionManager,
+    catalogCache,
+    pendingLinks,
   });
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+  return {
+    core,
+    state,
+    callbacks,
+    outbound,
+    accountsRepo,
+    pendingLinks,
+    dedup,
+    sessionManager,
+    catalogCache,
+  };
+}
+
+/**
+ * Arranca el runtime completo del microservicio: esquema `bot-db`, consumidor de
+ * `xchanger:events` (si hay `eventHandlers`) y servidor HTTP (`/telegram/webhook`, `/healthz`).
+ */
+export async function startBotRuntime(options: StartBotRuntimeOptions): Promise<BotRuntime> {
+  const cfg: BotRuntimeConfig = { ...env, ...options.config };
+  if (!cfg.TELEGRAM_BOT_TOKEN && !options.onUpdate) {
+    throw new Error('TELEGRAM_BOT_TOKEN es obligatorio cuando no se proporciona un manejador de updates');
+  }
+  const services = createBackServices(cfg);
+  const bot = cfg.TELEGRAM_BOT_TOKEN ? createTelegramBot(cfg.TELEGRAM_BOT_TOKEN, services) : undefined;
+  let consumer: RedisEventStreamConsumer | null = null;
+
+  if (!cfg.USE_MOCK_CORE) {
+    await initBotDatabase();
+
+    if (
+      options.eventHandlers &&
+      services.accountsRepo &&
+      services.sessionManager &&
+      services.pendingLinks &&
+      services.catalogCache &&
+      services.dedup
+    ) {
+      const dispatcher = new BotEventDispatcher({
+        accountsRepo: services.accountsRepo,
+        sessionManager: services.sessionManager,
+        pendingLinkStore: services.pendingLinks,
+        catalogCache: services.catalogCache,
+        coreClient: services.core,
+        handlers: options.eventHandlers,
+      });
+      consumer = new RedisEventStreamConsumer({
+        redis: getRedis(),
+        createBlockingClient: () => createRedisConnection('events-block'),
+        dedupStore: services.dedup,
+        dispatcher,
+      });
+      consumer.start();
+    }
+  }
+
+  const server = new BotHttpServer({
+    webhookSecret: cfg.TELEGRAM_WEBHOOK_SECRET,
+    dedupStore: services.dedup,
+    onUpdate: async (update) => {
+      await bot?.handleUpdate(update);
+      await options.onUpdate?.(update);
+    },
+    checkRedis: cfg.USE_MOCK_CORE
+      ? async () => true
+      : async () => (await getRedis().ping().catch(() => '')) === 'PONG',
+    checkCore: cfg.USE_MOCK_CORE ? async () => true : () => pingCoreHealth(cfg.CORE_API_URL),
+    getConsumerLagMs: () => consumer?.getConsumerLagMs() ?? 0,
+  });
+
+  const port = await server.listen(options.port ?? cfg.PORT);
+
+  const stop = async () => {
+    await consumer?.stop();
+    await server.close();
+    if (!cfg.USE_MOCK_CORE) {
+      await Promise.all([closeRedis(), closeBotDb()]);
+    }
+  };
+
+  return { services, server, port, stop };
+}
+
+if (require.main === module) {
+  startBotRuntime({})
+    .then((runtime) => {
+      console.log(
+        `[telegram-bot] escuchando en puerto ${runtime.port} (USE_MOCK_CORE=${env.USE_MOCK_CORE})`,
+      );
+      const shutdown = () => {
+        runtime
+          .stop()
+          .then(() => process.exit(0))
+          .catch(() => process.exit(1));
+      };
+      process.once('SIGTERM', shutdown);
+      process.once('SIGINT', shutdown);
+    })
+    .catch((err) => {
+      console.error('[telegram-bot] error fatal al iniciar:', err);
+      process.exit(1);
+    });
+}
+
+function createTelegramBot(token: string, services: BackServices): TelegramBot {
+  const bot = new Telegraf(token);
+  bot.use(async (ctx, next) => {
+    const start = Date.now();
+    const user = ctx.from;
+    console.log(`[Telegram] Update: ${ctx.updateType} | User: ${user?.id} (@${user?.username || 'sin_username'})`);
+    await next();
+    console.log(`[Telegram] Handled in ${Date.now() - start}ms`);
+  });
+
+  registerCommands(bot, services);
+  registerTextHandler(bot, services);
+  registerCallbackHandlers(bot, services);
+  bot.catch((error) => {
+    console.error('[telegram-bot] error procesando update de Telegram:', error);
+  });
+  return bot;
+}
