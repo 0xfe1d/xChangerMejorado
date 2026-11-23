@@ -11,6 +11,7 @@ router.get('/me', ...webOrChannel, offerController.myOffers);           // EP-C-
 router.get('/:id', authenticate, offerController.getOffer);             // solo web
 router.post('/', ...webOrChannel, idempotency(), offerController.createOffer);                 // EP-R-10
 router.post('/:id/accept', ...webOrChannel, idempotency(), offerController.acceptOffer);       // EP-R-11
+router.get('/:id/messages', ...webOrChannel, offerController.listOfferMessages);               // EP-C-15
 router.post('/:id/messages', ...webOrChannel, idempotency(), offerController.sendOfferMessage);// EP-R-13
 router.patch('/:id/close', ...webOrChannel, offerController.closeOffer);                       // EP-R-12
 

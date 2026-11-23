@@ -548,15 +548,42 @@ export async function listGroupsForSubject(asignaturaId: string) {
 }
 
 /** Búsqueda pública de asignaturas (catálogo de registro y expediente). */
-export async function searchSubjectsPublic(q: string) {
+export async function searchSubjectsPublic(
+  q: string,
+  opts?: { carreraId?: string; cursoId?: string; limit?: number; offset?: number },
+) {
+  const where = {
+    ...ACTIVE_ASIGNATURA,
+    ...(opts?.cursoId ? { cursoId: opts.cursoId } : {}),
+    ...(opts?.carreraId
+      ? { curso: { carreraId: opts.carreraId, deletedAt: null, carrera: { deletedAt: null } } }
+      : {}),
+    ...(q
+      ? { OR: [{ nombre: { contains: q, mode: 'insensitive' as const } }, { codigo: { contains: q, mode: 'insensitive' as const } }] }
+      : {}),
+  };
+
+  if (opts?.limit !== undefined || opts?.offset !== undefined) {
+    const limit = opts.limit ?? 10;
+    const offset = opts.offset ?? 0;
+    const [rows, total] = await Promise.all([
+      prisma.asignatura.findMany({
+        where,
+        select: { id: true, codigo: true, nombre: true, cursoId: true },
+        orderBy: { nombre: 'asc' },
+        take: limit,
+        skip: offset,
+      }),
+      prisma.asignatura.count({ where }),
+    ]);
+    return { items: rows, total };
+  }
+
   return prisma.asignatura.findMany({
-    where: {
-      ...ACTIVE_ASIGNATURA,
-      ...(q ? { OR: [{ nombre: { contains: q, mode: 'insensitive' } }, { codigo: { contains: q, mode: 'insensitive' } }] } : {}),
-    },
+    where,
     include: {
       grupos: { where: { deletedAt: null }, orderBy: { nombre: 'asc' } },
-      curso: { select: { id: true, nombre: true, carrera: { select: { nombre: true } } } },
+      curso: { select: { id: true, nombre: true, carreraId: true, carrera: { select: { nombre: true } } } },
     },
     orderBy: { nombre: 'asc' },
     take: 20,

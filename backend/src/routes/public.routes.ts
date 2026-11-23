@@ -18,7 +18,23 @@ router.get('/careers/:carreraId/courses', async (req: Request, res: Response, ne
 
 router.get('/subjects/search', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    res.json(await adminService.searchSubjectsPublic(String(req.query.q ?? '').trim().slice(0, 100)));
+    const q = String(req.query.q ?? '').trim().slice(0, 100);
+    const carreraId =
+      typeof req.query.carreraId === 'string' && req.query.carreraId ? req.query.carreraId : undefined;
+    const cursoId =
+      typeof req.query.cursoId === 'string' && req.query.cursoId ? req.query.cursoId : undefined;
+    const rawLimit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const rawOffset = req.query.offset !== undefined ? Number(req.query.offset) : undefined;
+    const limit =
+      rawLimit !== undefined && Number.isInteger(rawLimit) && rawLimit >= 1 && rawLimit <= 50
+        ? rawLimit
+        : undefined;
+    const offset =
+      rawOffset !== undefined && Number.isInteger(rawOffset) && rawOffset >= 0
+        ? rawOffset
+        : undefined;
+
+    res.json(await adminService.searchSubjectsPublic(q, { carreraId, cursoId, limit, offset }));
   } catch (err) { next(err); }
 });
 

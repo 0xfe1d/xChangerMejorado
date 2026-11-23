@@ -141,6 +141,23 @@ export async function getOffer(req: Request, res: Response, next: NextFunction):
   }
 }
 
+// ── GET /offers/:id/messages (EP-C-15) ────────────────────────
+
+const listMessagesSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+  before: z.string().cuid().optional(),
+});
+
+export async function listOfferMessages(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const parsed = listMessagesSchema.safeParse(req.query);
+  if (!parsed.success) return next(new AppError(400, parsed.error.errors[0].message));
+  try {
+    res.json(await offerService.listOfferMessages(requireId(req), req.user!.sub, parsed.data));
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ── POST /offers/:id/messages ─────────────────────────────────
 
 const messageSchema = z.object({ content: z.string() });

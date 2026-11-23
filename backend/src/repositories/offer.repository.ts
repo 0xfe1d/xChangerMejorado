@@ -140,3 +140,36 @@ export async function findOfferMessages(offerId: string) {
     orderBy: [{ timestamp: 'asc' }, { id: 'asc' }],
   });
 }
+
+/** Devuelve una página de mensajes de una oferta en orden cronológico ascendente (`EP-C-15`). */
+export async function findOfferMessagesPage(
+  offerId: string,
+  opts: { limit: number; beforeId?: string },
+) {
+  let beforeFilter: Prisma.MessageWhereInput = {};
+  if (opts.beforeId) {
+    const anchor = await prisma.message.findFirst({
+      where: { id: opts.beforeId, offerId },
+      select: { id: true, timestamp: true },
+    });
+    if (anchor) {
+      beforeFilter = {
+        OR: [
+          { timestamp: { lt: anchor.timestamp } },
+          { timestamp: anchor.timestamp, id: { lt: anchor.id } },
+        ],
+      };
+    }
+  }
+
+  const rows = await prisma.message.findMany({
+    where: { offerId, ...beforeFilter },
+    include: { author: { select: { id: true, name: true } } },
+    orderBy: [{ timestamp: 'desc' }, { id: 'desc' }],
+    take: opts.limit + 1,
+  });
+
+  const hasMore = rows.length > opts.limit;
+  const items = (hasMore ? rows.slice(0, opts.limit) : rows).reverse();
+  return { items, hasMore };
+}

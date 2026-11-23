@@ -258,6 +258,37 @@ export async function getOfferById(offerId: string, requesterId: string) {
   return { ...offer, messages };
 }
 
+/** Mensajes paginados de una oferta para clientes de canal/web (`EP-C-15`). */
+export async function listOfferMessages(
+  offerId: string,
+  requesterId: string,
+  opts: { limit?: number; before?: string } = {},
+) {
+  const offer = await offerRepo.findById(offerId);
+  if (!offer) throw new AppError(404, 'Oferta no encontrada');
+  const isParticipant = offer.userId === requesterId || offer.acceptedById === requesterId;
+  if (!isParticipant) throw new AppError(403, 'No tienes acceso a esta oferta');
+
+  const limit = Math.min(Math.max(opts.limit ?? 20, 1), 50);
+  const { items, hasMore } = await offerRepo.findOfferMessagesPage(offerId, {
+    limit,
+    beforeId: opts.before,
+  });
+
+  return {
+    items: items.map((m) => ({
+      id: m.id,
+      authorId: m.authorId,
+      authorName: m.author.name,
+      content: m.content,
+      timestamp: m.timestamp.toISOString(),
+      isMine: m.authorId === requesterId,
+    })),
+    hasMore,
+    chatOpen: offer.status === OfferStatus.ACCEPTED,
+  };
+}
+
 // ── Mensajería (RF-CHT) ───────────────────────────────────────
 
 /**
