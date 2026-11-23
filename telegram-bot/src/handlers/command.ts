@@ -121,6 +121,10 @@ export function registerCommands(bot: any, services: BackServices) {
     bot.command('cancelar', async (ctx: TelegramContext) => {
         const chatId = ctx.chat?.id.toString();
         if (!chatId) return;
+        if (!(await state.get(chatId))) {
+            await ctx.reply('No hay ninguna operación en curso.');
+            return;
+        }
         await state.clear(chatId);
         await ctx.reply('Solicitud cancelada.');
     });

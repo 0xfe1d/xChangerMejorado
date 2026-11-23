@@ -88,6 +88,16 @@ export function registerCallbackHandlers(bot: any, services: BackServices) {
         }
 
         try {
+            try {
+                await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+            } catch (error) {
+                if (error instanceof Error && /message is not modified/i.test(error.message)) {
+                    await ctx.answerCbQuery('Este menú ya se actualizó. Usa los botones más recientes.');
+                    return;
+                }
+                throw error;
+            }
+
             switch (payload.action) {
                 case 'reg:carrera_page': {
                     const page = Number(payload.data.page ?? 0);

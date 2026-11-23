@@ -21,4 +21,7 @@ export interface TelegramContext {
     reply(text: string, extra?: Record<string, unknown>): Promise<unknown>;
     deleteMessage(messageId: number): Promise<boolean>;
     answerCbQuery(text?: string): Promise<boolean>;
+    editMessageReplyMarkup(replyMarkup: {
+        inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    }): Promise<unknown>;
 }

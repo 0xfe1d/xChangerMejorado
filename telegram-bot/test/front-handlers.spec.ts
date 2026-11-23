@@ -278,8 +278,12 @@ describe('Handlers del bot - Guardias, estados y validaciones', () => {
     };
 
     let createCalls = 0;
+    let listMyOffersCalls = 0;
     const core: any = {
-      listMyOffers: async () => ({ items: [existingOffer], nextCursor: null }),
+      listMyOffers: async () => {
+        listMyOffersCalls += 1;
+        return { items: [existingOffer], nextCursor: null };
+      },
       createOffer: async () => {
         createCalls += 1;
         return existingOffer;
@@ -324,15 +328,33 @@ describe('Handlers del bot - Guardias, estados y validaciones', () => {
 
     const replies: string[] = [];
     const cbAnswers: string[] = [];
+    let keyboardUsed = false;
     await callbackHandlers[0]({
       chat: { id: 1001, type: 'private' },
       from: { id: 2002, first_name: 'Oscar' },
       callbackQuery: { id: 'q1', data: key },
       answerCbQuery: async (msg?: string) => cbAnswers.push(msg ?? ''),
+      editMessageReplyMarkup: async () => {
+        if (keyboardUsed) throw new Error('400: Bad Request: message is not modified');
+        keyboardUsed = true;
+      },
+      reply: async (msg: string) => replies.push(msg),
+    });
+    await callbackHandlers[0]({
+      chat: { id: 1001, type: 'private' },
+      from: { id: 2002, first_name: 'Oscar' },
+      callbackQuery: { id: 'q2', data: key },
+      answerCbQuery: async (msg?: string) => cbAnswers.push(msg ?? ''),
+      editMessageReplyMarkup: async () => {
+        if (keyboardUsed) throw new Error('400: Bad Request: message is not modified');
+        keyboardUsed = true;
+      },
       reply: async (msg: string) => replies.push(msg),
     });
 
     assert.equal(createCalls, 0);
+    assert.equal(listMyOffersCalls, 1);
+    assert.match(cbAnswers[1], /menú ya se actualizó/i);
     assert.match(cbAnswers[0], /Ya tienes esa oferta abierta/i);
     assert.match(replies[0], /Ya tienes una oferta abierta con esos mismos grupos/i);
 
@@ -345,6 +367,7 @@ describe('Handlers del bot - Guardias, estados y validaciones', () => {
         reply: async (msg: string) => viewReplies.push(msg),
         deleteMessage: async () => true,
         answerCbQuery: async () => true,
+        editMessageReplyMarkup: async () => true,
       },
       core,
       callbacks,
@@ -363,6 +386,20 @@ describe('Handlers del bot - Guardias, estados y validaciones', () => {
     assert.equal(replies.length, 1);
     assert.match(replies[0], /Comando no reconocido/i);
     assert.match(replies[0], /\/ayuda/);
+  });
+
+  it('solo confirma /cancelar cuando hay una operación activa', async () => {
+    const emptyHarness = createHandlerHarness();
+    const emptyCtx = emptyHarness.makeCtx({ text: '/cancelar' });
+    await emptyHarness.runCommand('cancelar', emptyCtx.ctx);
+    assert.deepEqual(emptyCtx.replies, ['No hay ninguna operación en curso.']);
+
+    const activeHarness = createHandlerHarness();
+    activeHarness.stateStore.set('1001', { step: 'ENTRAR:ESPERANDO_EMAIL', data: {} });
+    const activeCtx = activeHarness.makeCtx({ text: '/cancelar' });
+    await activeHarness.runCommand('cancelar', activeCtx.ctx);
+    assert.deepEqual(activeCtx.replies, ['Solicitud cancelada.']);
+    assert.equal(activeHarness.stateStore.has('1001'), false);
   });
 
   it('responde cuando el usuario escribe texto en pasos que requieren pulsar botón', async () => {
@@ -402,6 +439,7 @@ describe('Handlers del bot - Guardias, estados y validaciones', () => {
         reply: async (msg: string) => viewReplies.push(msg),
         deleteMessage: async () => true,
         answerCbQuery: async () => true,
+        editMessageReplyMarkup: async () => true,
       },
       core,
       callbacks,
