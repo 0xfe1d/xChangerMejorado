@@ -2,6 +2,13 @@ import { BackServices } from '../index';
 import { TelegramContext } from '../types/telegram';
 import { enterOfferChat, sendExpedienteView, sendMyOffersView, sendNotificationsView, startOfferFlow } from './callback';
 
+const ROLE_LABELS: Record<string, string> = {
+    ESTUDIANTE: 'Estudiante',
+    STUDENT: 'Estudiante',
+    EMBAJADOR: 'Embajador',
+    PROPIETARIO: 'Propietario',
+};
+
 // Comandos principales del bot telegram
 export function registerCommands(bot: any, services: BackServices) {
     const { core, state, callbacks } = services;
@@ -35,11 +42,17 @@ export function registerCommands(bot: any, services: BackServices) {
     // Un comando nuevo abandona el flujo conversacional actual. /salir necesita
     // conservarlo para comprobar si el usuario estaba dentro de un chat.
     bot.use(async (ctx: TelegramContext, next: () => Promise<void>) => {
-        const text = ctx.message?.text;
+        const text = ctx.message?.text?.trim();
         const chatId = ctx.chat?.id.toString();
-        const command = text?.match(/^\/([a-z0-9_]+)(?:@\w+)?(?:\s|$)/i)?.[1].toLowerCase();
-        if (chatId && commandNames.has(command ?? '') && command !== 'cancelar' && command !== 'salir') {
-            await state.clear(chatId);
+        if (text?.startsWith('/')) {
+            const command = text.match(/^\/([a-z0-9_]+)(?:@\w+)?(?:\s|$)/i)?.[1].toLowerCase();
+            if (!commandNames.has(command ?? '')) {
+                await ctx.reply('Comando no reconocido. Usa /ayuda para ver los comandos disponibles.');
+                return;
+            }
+            if (chatId && command !== 'cancelar' && command !== 'salir') {
+                await state.clear(chatId);
+            }
         }
         await next();
     });
@@ -53,7 +66,16 @@ export function registerCommands(bot: any, services: BackServices) {
         const linked = await core.isLinked(externalUserId);
     
         if (linked) {
-            await ctx.reply('¡Ya estás vinculado! Puedes usar los comandos disponibles.');
+            await ctx.reply(
+                '¡Hola de nuevo! Tu cuenta ya está vinculada.\n\n' +
+                '• /expediente - Consultar y editar tus asignaturas\n' +
+                '• /buscar - Buscar ofertas de cambio de grupo\n' +
+                '• /ofertar - Publicar una oferta nueva\n' +
+                '• /misofertas - Ver tus ofertas activas\n' +
+                '• /chat - Entrar al chat de un intercambio\n' +
+                '• /ayuda - Ver todos los comandos',
+                { parse_mode: 'Markdown' },
+            );
         } else {
             await ctx.reply('¡Bienvenido!\n\n' +
             '• /vincular - Enlazar con la web\n' +
@@ -74,6 +96,11 @@ export function registerCommands(bot: any, services: BackServices) {
         if (!user || !chat) return;
 
         try {
+            if (await core.isLinked(user.id.toString())) {
+                await ctx.reply('Ya tienes una cuenta vinculada en este chat. Usa /desvincular primero si deseas cambiar de cuenta.');
+                return;
+            }
+
             const linkData = await core.createLinkRequest({
             externalUserId: user.id.toString(),
             chatId: chat.id.toString(),
@@ -82,7 +109,6 @@ export function registerCommands(bot: any, services: BackServices) {
             });
 
             await ctx.reply(`**Solicitud de vinculación creada**\n\n` +
-            `Código de dispositivo: \`${linkData.deviceCode}\`\n` +
             `Código de usuario: **${linkData.userCode}**\n\n` +
             `Aprueba la vinculación en el siguiente enlace:\n${linkData.verificationUriComplete}`,
             { parse_mode: 'Markdown' });
@@ -128,13 +154,20 @@ export function registerCommands(bot: any, services: BackServices) {
             }
 
             const profile = await core.getProfile(externalUserId);
-            const mfa = (profile as typeof profile & { mfa?: { enabled?: boolean } }).mfa;
+            const profileWithMfa = profile as typeof profile & {
+                mfaEnabled?: boolean;
+                mfa?: { enabled?: boolean };
+            };
+            const isMfaEnabled =
+                typeof profileWithMfa.mfaEnabled === 'boolean'
+                    ? profileWithMfa.mfaEnabled
+                    : Boolean(profileWithMfa.mfa?.enabled);
 
             await ctx.reply(`**Perfil de usuario**\n\n` +
                 `Nombre: **${profile.name}**\n` +
                 `Correo electrónico: **${profile.email}**\n` +
-                `Rol: ${profile.role}\n` +
-                `MFA: ${mfa?.enabled ? 'Activado' : 'Desactivado'}`,
+                `Rol: ${ROLE_LABELS[profile.role] ?? profile.role}\n` +
+                `MFA: ${isMfaEnabled ? 'Activado' : 'Desactivado'}`,
                 { parse_mode: 'Markdown' }
             );
         } catch (error) {
@@ -304,9 +337,7 @@ export function registerCommands(bot: any, services: BackServices) {
             const myOffers = await core.listMyOffers(externalUserId, { status: ['ACCEPTED'] });
 
             if (myOffers.items.length === 0) {
-                await ctx.reply('No tienes ninguna oferta en estado **ACCEPTED** con chat disponible.', {
-                    parse_mode: 'Markdown',
-                });
+                await ctx.reply('No tienes ninguna oferta aceptada con chat disponible.');
                 return;
             }
 
@@ -318,12 +349,15 @@ export function registerCommands(bot: any, services: BackServices) {
 
             if (!target) {
                 const rows = await Promise.all(
-                    myOffers.items.map(async (o) => [
-                        {
-                            text: `Chat: ${o.asignatura.codigo} (${o.grupoActual.nombre} ⇄ ${o.grupoDeseado.nombre})`,
-                            callback_data: await callbacks.encode({ action: 'myoff:chat', data: { offerId: o.id } }, 900),
-                        },
-                    ]),
+                    myOffers.items.map(async (o) => {
+                        const label = `${o.asignatura.codigo}${o.counterpart?.name ? ` con ${o.counterpart.name}` : ''}`;
+                        return [
+                            {
+                                text: `Chat: ${o.asignatura.codigo} (${o.grupoActual.nombre} ⇄ ${o.grupoDeseado.nombre})`,
+                                callback_data: await callbacks.encode({ action: 'myoff:chat', data: { offerId: o.id, label } }, 900),
+                            },
+                        ];
+                    }),
                 );
 
                 await ctx.reply('Tienes varias ofertas aceptadas. Elige a cuál quieres entrar:', {
@@ -332,7 +366,8 @@ export function registerCommands(bot: any, services: BackServices) {
                 return;
             }
 
-            await enterOfferChat(ctx, core, state, chatId, externalUserId, target.id);
+            const targetLabel = `${target.asignatura.codigo}${target.counterpart?.name ? ` con ${target.counterpart.name}` : ''}`;
+            await enterOfferChat(ctx, core, state, chatId, externalUserId, target.id, targetLabel);
         } catch {
             await ctx.reply('No se pudo abrir el chat de la oferta. Inténtalo de nuevo más tarde.');
         }

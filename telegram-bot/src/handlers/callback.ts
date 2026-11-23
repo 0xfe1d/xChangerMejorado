@@ -1,7 +1,71 @@
-import { BackServices, CallbackPayload } from '../index';
+import { BackServices, CallbackPayload, OfferStatus } from '../index';
 import { TelegramContext } from '../types/telegram';
 
 const PAGE_SIZE = 5;
+
+const OFFER_STATUS_LABELS: Record<OfferStatus, string> = {
+    OPEN: '🟢 Abierta',
+    ACCEPTED: '🤝 Aceptada',
+    CLOSED: '🔒 Cerrada',
+    INACTIVE: '⏸️ Inactiva',
+};
+
+function formatOfferStatus(status: OfferStatus): string {
+    return OFFER_STATUS_LABELS[status] ?? status;
+}
+
+async function publishOfferCheckingDuplicates(
+    ctx: TelegramContext,
+    core: BackServices['core'],
+    state: BackServices['state'],
+    params: {
+        chatId: string;
+        externalUserId: string;
+        asignaturaId: string;
+        grupoActualId: string;
+        grupoDeseadoId: string;
+        updateId?: number;
+        title: string;
+    },
+): Promise<void> {
+    const { chatId, externalUserId, asignaturaId, grupoActualId, grupoDeseadoId, updateId, title } = params;
+    const existing = await core.listMyOffers(externalUserId, {
+        status: ['OPEN'],
+        role: 'creator',
+        limit: 50,
+    });
+    const isDuplicate = existing.items.some(
+        (o) =>
+            o.asignatura.id === asignaturaId &&
+            o.grupoActual.id === grupoActualId &&
+            o.grupoDeseado.id === grupoDeseadoId,
+    );
+    if (isDuplicate) {
+        await state.clear(chatId);
+        await ctx.answerCbQuery('Ya tienes esa oferta abierta');
+        await ctx.reply(
+            'Ya tienes una oferta abierta con esos mismos grupos. Espera a que alguien la acepte o gestiónala en /misofertas.',
+        );
+        return;
+    }
+
+    const created = await core.createOffer(
+        externalUserId,
+        { asignaturaId, grupoActualId, grupoDeseadoId },
+        { updateId },
+    );
+    await state.clear(chatId);
+    await ctx.answerCbQuery('Oferta publicada');
+    await ctx.reply(
+        `**${title}**\n\n` +
+        `• Asignatura: **${created.asignatura.codigo} — ${created.asignatura.nombre}**\n` +
+        `• Ofreces: **${created.grupoActual.nombre}**\n` +
+        `• Buscas: **${created.grupoDeseado.nombre}**\n` +
+        `• Estado: ${formatOfferStatus(created.status)}\n\n` +
+        `Puedes gestionarla en /misofertas.`,
+        { parse_mode: 'Markdown' },
+    );
+}
 
 export function registerCallbackHandlers(bot: any, services: BackServices) {
     const { core, state, callbacks } = services;
@@ -361,22 +425,15 @@ export function registerCallbackHandlers(bot: any, services: BackServices) {
                     }
 
                     if (mode === 'create') {
-                        const created = await core.createOffer(
+                        await publishOfferCheckingDuplicates(ctx, core, state, {
+                            chatId,
                             externalUserId,
-                            { asignaturaId, grupoActualId, grupoDeseadoId },
-                            { updateId },
-                        );
-                        await state.clear(chatId);
-                        await ctx.answerCbQuery('Oferta publicada');
-                        await ctx.reply(
-                            `**Oferta publicada correctamente**\n\n` +
-                            `• Asignatura: **${created.asignatura.codigo} — ${created.asignatura.nombre}**\n` +
-                            `• Ofreces: **${created.grupoActual.nombre}**\n` +
-                            `• Buscas: **${created.grupoDeseado.nombre}**\n` +
-                            `• Estado: \`${created.status}\`\n\n` +
-                            `Puedes gestionarla en /misofertas.`,
-                            { parse_mode: 'Markdown' },
-                        );
+                            asignaturaId,
+                            grupoActualId,
+                            grupoDeseadoId,
+                            updateId,
+                            title: 'Oferta publicada correctamente',
+                        });
                         return;
                     }
 
@@ -463,21 +520,15 @@ export function registerCallbackHandlers(bot: any, services: BackServices) {
                         return;
                     }
 
-                    const created = await core.createOffer(
+                    await publishOfferCheckingDuplicates(ctx, core, state, {
+                        chatId,
                         externalUserId,
-                        { asignaturaId, grupoActualId, grupoDeseadoId },
-                        { updateId },
-                    );
-                    await state.clear(chatId);
-                    await ctx.answerCbQuery('Oferta publicada');
-                    await ctx.reply(
-                        `**Oferta publicada con tus parámetros de búsqueda**\n\n` +
-                        `• Asignatura: **${created.asignatura.codigo} — ${created.asignatura.nombre}**\n` +
-                        `• Ofreces: **${created.grupoActual.nombre}**\n` +
-                        `• Buscas: **${created.grupoDeseado.nombre}**\n\n` +
-                        `Te avisaremos cuando alguien la acepte. Puedes revisarla en /misofertas.`,
-                        { parse_mode: 'Markdown' },
-                    );
+                        asignaturaId,
+                        grupoActualId,
+                        grupoDeseadoId,
+                        updateId,
+                        title: 'Oferta publicada con tus parámetros de búsqueda',
+                    });
                     break;
                 }
 
@@ -492,8 +543,21 @@ export function registerCallbackHandlers(bot: any, services: BackServices) {
 
                 case 'myoff:chat': {
                     const offerId = String(payload.data.offerId ?? '');
+                    const label = typeof payload.data.label === 'string' ? payload.data.label : undefined;
                     await ctx.answerCbQuery('Abriendo chat');
-                    await enterOfferChat(ctx, core, state, chatId, externalUserId, offerId);
+                    await enterOfferChat(ctx, core, state, chatId, externalUserId, offerId, label);
+                    break;
+                }
+
+                case 'myoff:history': {
+                    await ctx.answerCbQuery();
+                    await sendMyOffersView(ctx, core, callbacks, externalUserId, 'history');
+                    break;
+                }
+
+                case 'myoff:active': {
+                    await ctx.answerCbQuery();
+                    await sendMyOffersView(ctx, core, callbacks, externalUserId, 'active');
                     break;
                 }
 
@@ -551,6 +615,10 @@ export async function showCarreraPage(
     page: number,
 ) {
     const carreras = await core.listCareers();
+    if (carreras.length === 0) {
+        await ctx.reply('No hay carreras disponibles en este momento. Inténtalo más tarde.');
+        return;
+    }
     const totalPages = Math.max(1, Math.ceil(carreras.length / PAGE_SIZE));
     const safePage = Math.max(0, Math.min(page, totalPages - 1));
     const slice = carreras.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
@@ -600,6 +668,10 @@ export async function showCursoPage(
     page: number,
 ) {
     const cursos = await core.listCourses(carreraId);
+    if (cursos.length === 0) {
+        await ctx.reply('Esta carrera no tiene cursos disponibles en este momento. Usa /registro para elegir otra o /cancelar.');
+        return;
+    }
     const totalPages = Math.max(1, Math.ceil(cursos.length / PAGE_SIZE));
     const safePage = Math.max(0, Math.min(page, totalPages - 1));
     const slice = cursos.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
@@ -976,31 +1048,52 @@ export async function sendMyOffersView(
     core: BackServices['core'],
     callbacks: BackServices['callbacks'],
     externalUserId: string,
+    viewMode: 'active' | 'history' = 'active',
 ) {
-    const res = await core.listMyOffers(externalUserId);
+    const targetStatuses: OfferStatus[] =
+        viewMode === 'history' ? ['CLOSED', 'INACTIVE'] : ['OPEN', 'ACCEPTED'];
+    const res = await core.listMyOffers(externalUserId, { status: targetStatuses });
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
     if (res.items.length === 0) {
-        await ctx.reply('No tienes ofertas creadas ni aceptadas todavía. Usa /buscar o /ofertar para empezar.');
+        const emptyText =
+            viewMode === 'history'
+                ? 'No tienes ofertas cerradas ni inactivas en tu historial.'
+                : 'No tienes ofertas activas todavía. Usa /buscar o /ofertar para empezar.';
+        const toggleRow = [
+            viewMode === 'history'
+                ? {
+                      text: '⬅️ Ver ofertas activas',
+                      callback_data: await callbacks.encode({ action: 'myoff:active', data: {} }, 900),
+                  }
+                : {
+                      text: 'Ver historial (cerradas)',
+                      callback_data: await callbacks.encode({ action: 'myoff:history', data: {} }, 900),
+                  },
+        ];
+        await ctx.reply(emptyText, { reply_markup: { inline_keyboard: [toggleRow] } });
         return;
     }
 
-    let text = '**Tus ofertas**\n\n';
-    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+    let text = viewMode === 'history' ? '**Historial de ofertas**\n\n' : '**Tus ofertas activas**\n\n';
 
     for (const offer of res.items) {
-        const rolLabel = offer.isCreator ? 'Creada' : 'Aceptada';
+        const rolLabel = offer.isCreator ? 'Publicada por ti' : 'Aceptada por ti';
+        const counterpartLabel = offer.counterpart?.name ? ` · con **${offer.counterpart.name}**` : '';
         text +=
             `• **${offer.asignatura.codigo} — ${offer.asignatura.nombre}** ` +
             `(**${offer.grupoActual.nombre}** → **${offer.grupoDeseado.nombre}**) · ` +
-            `Estado: \`${offer.status}\` (${rolLabel})\n`;
+            `${formatOfferStatus(offer.status)} (${rolLabel})${counterpartLabel}\n`;
 
         const actionRow: Array<{ text: string; callback_data: string }> = [];
         if (offer.status === 'ACCEPTED') {
+            const label = `${offer.asignatura.codigo}${offer.counterpart?.name ? ` con ${offer.counterpart.name}` : ''}`;
             actionRow.push({
                 text: `Abrir chat (${offer.asignatura.codigo})`,
-                callback_data: await callbacks.encode({ action: 'myoff:chat', data: { offerId: offer.id } }, 900),
+                callback_data: await callbacks.encode({ action: 'myoff:chat', data: { offerId: offer.id, label } }, 900),
             });
         }
-        if (offer.status !== 'CLOSED') {
+        if (offer.status !== 'CLOSED' && offer.status !== 'INACTIVE') {
             actionRow.push({
                 text: `Cerrar (${offer.asignatura.codigo})`,
                 callback_data: await callbacks.encode({ action: 'myoff:close', data: { offerId: offer.id } }, 900),
@@ -1009,9 +1102,21 @@ export async function sendMyOffersView(
         if (actionRow.length > 0) rows.push(actionRow);
     }
 
+    rows.push([
+        viewMode === 'history'
+            ? {
+                  text: '⬅️ Ver ofertas activas',
+                  callback_data: await callbacks.encode({ action: 'myoff:active', data: {} }, 900),
+              }
+            : {
+                  text: 'Ver historial (cerradas)',
+                  callback_data: await callbacks.encode({ action: 'myoff:history', data: {} }, 900),
+              },
+    ]);
+
     await ctx.reply(text, {
         parse_mode: 'Markdown',
-        reply_markup: rows.length > 0 ? { inline_keyboard: rows } : undefined,
+        reply_markup: { inline_keyboard: rows },
     });
 }
 
@@ -1022,11 +1127,14 @@ export async function enterOfferChat(
     chatId: string,
     externalUserId: string,
     offerId: string,
+    chatLabel?: string,
 ) {
     const history = await core.getOfferMessages(externalUserId, offerId);
     await state.set(chatId, { step: 'CHAT:ACTIVO', data: { offerId } }, 3600);
 
-    let text = `**Chat de oferta (\`${offerId}\`)**\n`;
+    let text = chatLabel
+        ? `💬 **Chat de intercambio — ${chatLabel}**\n`
+        : '💬 **Chat de intercambio**\n';
     text += history.chatOpen
         ? 'Escribe cualquier mensaje para enviarlo. Usa /salir para terminar.\n\n'
         : 'Este chat está cerrado en este momento. Usa /salir para volver.\n\n';

@@ -231,6 +231,11 @@ export const registerTextHandler = (bot: any, services: BackServices) => {
                 await ctx.reply('Mensaje enviado.');
                 return;
             }
+
+            // Pasos guiados por botones inline (evita silencio si el usuario escribe texto)
+            await ctx.reply(
+                'Por favor, pulsa uno de los botones del mensaje anterior o escribe /cancelar para salir.',
+            );
         } catch (error: any) {
             const errorMSG = error?.message || 'Codigo invalido o expirado. Por favor, inténtalo de nuevo.';
             await ctx.reply(`Ocurrió un error: ${errorMSG}. Por favor, inténtalo de nuevo más tarde o escribe /cancelar para salir.`);
