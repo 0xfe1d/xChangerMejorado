@@ -3,6 +3,25 @@ import { TelegramContext } from '../types/telegram';
 
 const PAGE_SIZE = 5;
 
+const EXPECTED_STEP_BY_ACTION: Record<string, string> = {
+    'reg:carrera_page': 'REGISTRO:ELEGIR_CARRERA',
+    'reg:carrera_select': 'REGISTRO:ELEGIR_CARRERA',
+    'reg:curso_page': 'REGISTRO:ESPERANDO_CICLO',
+    'reg:curso_select': 'REGISTRO:ESPERANDO_CICLO',
+    'reg:subj_search': 'REGISTRO:ASIGNATURAS_INICIALES',
+    'reg:subj_add': 'REGISTRO:ASIGNATURAS_INICIALES',
+    'reg:finish_subjects': 'REGISTRO:ASIGNATURAS_INICIALES',
+    'reg:subj_search_all': 'REGISTRO:ASIGNATURAS_INICIALES',
+    'exp:subj_page': 'EXP:BUSCAR_ASIGNATURA',
+    'exp:subj_add': 'EXP:BUSCAR_ASIGNATURA',
+    'off:subj_select': 'OFERTA:ELEGIR_ASIGNATURA',
+    'off:actual_select': 'OFERTA:GRUPO_ACTUAL',
+    'off:deseado_select': 'OFERTA:GRUPO_DESEADO',
+    'off:search_more': 'OFERTA:RESULTADOS',
+    'off:accept': 'OFERTA:RESULTADOS',
+    'off:publish_from_search': 'OFERTA:RESULTADOS',
+};
+
 const OFFER_STATUS_LABELS: Record<OfferStatus, string> = {
     OPEN: '🟢 Abierta',
     ACCEPTED: '🤝 Aceptada',
@@ -88,14 +107,33 @@ export function registerCallbackHandlers(bot: any, services: BackServices) {
         }
 
         try {
-            try {
-                await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-            } catch (error) {
-                if (error instanceof Error && /message is not modified/i.test(error.message)) {
-                    await ctx.answerCbQuery('Este menú ya se actualizó. Usa los botones más recientes.');
+            if (typeof ctx.editMessageReplyMarkup === 'function') {
+                try {
+                    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+                } catch (error) {
+                    const msg = error instanceof Error ? error.message : String(error);
+                    if (/message is not modified/i.test(msg)) {
+                        await ctx.answerCbQuery('Este menú ya se actualizó. Usa los botones más recientes.');
+                        return;
+                    }
+                    if (!/message can't be edited|message to edit not found/i.test(msg)) {
+                        throw error;
+                    }
+                }
+            }
+
+            const expectedStep = EXPECTED_STEP_BY_ACTION[payload.action];
+            if (expectedStep) {
+                const currentState = await state.get(chatId);
+                if (currentState?.step !== expectedStep) {
+                    await ctx.answerCbQuery('Paso ya completado o expirado.');
+                    await ctx.reply(
+                        currentState
+                            ? 'Ese paso ya se completó. Continúa con el paso actual o escribe /cancelar.'
+                            : 'La operación ha expirado o fue cancelada. Inicia de nuevo el comando.',
+                    );
                     return;
                 }
-                throw error;
             }
 
             switch (payload.action) {
