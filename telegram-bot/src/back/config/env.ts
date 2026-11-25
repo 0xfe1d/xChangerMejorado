@@ -7,6 +7,15 @@ const boolFromString = (def: 'true' | 'false') =>
     .default(def)
     .transform((v) => v !== 'false' && v !== '0');
 
+export const normalizeCoreApiUrl = (raw: string): string => {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  const parsedUrl = new URL(trimmed);
+  if (parsedUrl.pathname === '' || parsedUrl.pathname === '/') {
+    return `${trimmed}/api/v1`;
+  }
+  return trimmed;
+};
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -18,7 +27,11 @@ const envSchema = z
     TELEGRAM_WEBHOOK_URL: z.string().default(''),
     TELEGRAM_WEBHOOK_SECRET: z.string().min(1).max(256).default('dev-webhook-secret'),
 
-    CORE_API_URL: z.string().url().default('http://localhost:4000/api/v1'),
+    CORE_API_URL: z
+      .string()
+      .url()
+      .default('https://xchanger-uc.xyz/api/v1')
+      .transform(normalizeCoreApiUrl),
     SERVICE_CLIENT_ID: z.string().default('telegram-bot'),
     SERVICE_CLIENT_SECRET: z.string().default(''),
 

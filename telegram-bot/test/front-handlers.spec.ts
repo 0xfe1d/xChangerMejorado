@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { normalizeCoreApiUrl } from '../src/back/config/env';
 import { OutboundQueue } from '../src/back/telegram/outbound-queue';
 import { registerCallbackHandlers, sendMyOffersView } from '../src/handlers/callback';
 import { registerCommands } from '../src/handlers/command';
@@ -447,5 +448,71 @@ describe('Handlers del bot - Guardias, estados y validaciones', () => {
     );
 
     assert.match(viewReplies[0], /con \*\*Ana García\*\*/);
+  });
+
+  it('bloquea pulsar botones de pasos anteriores cuando el flujo ya avanzó', async () => {
+    const callbacksMap = new Map<string, { action: string; data: Record<string, unknown> }>();
+    const callbackHandlers: Array<(ctx: any) => Promise<void>> = [];
+    const bot = {
+      use: () => undefined,
+      command: () => undefined,
+      on: (event: string, fn: (ctx: any) => Promise<void>) => {
+        if (event === 'callback_query') callbackHandlers.push(fn);
+      },
+    };
+
+    let listGroupsCalled = 0;
+    const core: any = {
+      listSubjectGroups: async () => {
+        listGroupsCalled += 1;
+        return [];
+      },
+    };
+    const stateStore = new Map<string, { step: string; data: Record<string, unknown> }>([
+      ['1001', { step: 'OFERTA:GRUPO_DESEADO', data: { asignaturaId: 'asig_1', grupoActualId: 'grp_a' } }],
+    ]);
+    const state: any = {
+      get: async (id: string) => stateStore.get(id) ?? null,
+      set: async (id: string, val: any) => stateStore.set(id, val),
+      clear: async (id: string) => stateStore.delete(id),
+    };
+    const callbacks: any = {
+      encode: async (payload: { action: string; data: Record<string, unknown> }) => {
+        const key = `cb:${callbacksMap.size + 1}`;
+        callbacksMap.set(key, payload);
+        return key;
+      },
+      decode: async (key: string) => callbacksMap.get(key) ?? null,
+    };
+
+    registerCallbackHandlers(bot, { core, state, callbacks } as any);
+    const staleKey = await callbacks.encode({
+      action: 'off:actual_select',
+      data: { grupoActualId: 'grp_b', grupoActualNombre: 'Grupo B' },
+    });
+
+    const replies: string[] = [];
+    const cbAnswers: string[] = [];
+    await callbackHandlers[0]({
+      chat: { id: 1001, type: 'private' },
+      from: { id: 2002, first_name: 'Oscar' },
+      callbackQuery: { id: 'q_stale', data: staleKey },
+      answerCbQuery: async (msg?: string) => cbAnswers.push(msg ?? ''),
+      editMessageReplyMarkup: async () => true,
+      reply: async (msg: string) => replies.push(msg),
+    });
+
+    assert.equal(listGroupsCalled, 0);
+    assert.equal(stateStore.get('1001')?.step, 'OFERTA:GRUPO_DESEADO');
+    assert.match(cbAnswers[0], /Paso ya completado/i);
+    assert.match(replies[0], /Continúa con el paso actual/i);
+  });
+
+  it('normaliza CORE_API_URL tanto si se pasa el dominio raíz como si incluye /api/v1', () => {
+    assert.equal(normalizeCoreApiUrl('https://xchanger-uc.xyz'), 'https://xchanger-uc.xyz/api/v1');
+    assert.equal(normalizeCoreApiUrl('https://xchanger-uc.xyz/'), 'https://xchanger-uc.xyz/api/v1');
+    assert.equal(normalizeCoreApiUrl('https://xchanger-uc.xyz/api/v1'), 'https://xchanger-uc.xyz/api/v1');
+    assert.equal(normalizeCoreApiUrl('https://xchanger-uc.xyz/api/v1/'), 'https://xchanger-uc.xyz/api/v1');
+    assert.equal(normalizeCoreApiUrl('http://backend:3000/api/v1'), 'http://backend:3000/api/v1');
   });
 });

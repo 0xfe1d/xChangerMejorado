@@ -142,7 +142,7 @@ services:
       NODE_ENV: production
       PORT: "8080"
       USE_MOCK_CORE: "${TG_USE_MOCK_CORE:-false}"
-      CORE_API_URL: "http://backend:3000/api/v1"
+      CORE_API_URL: "${CORE_API_URL:-http://backend:3000/api/v1}"
       REDIS_URL: "redis://redis:6379/0"
       BOT_DATABASE_URL: "postgresql://${BOT_POSTGRES_USER:-xchanger_bot}:${BOT_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD}}@bot-db:5432/${BOT_POSTGRES_DB:-xchanger_bot}?sslmode=disable"
       SERVICE_CLIENT_ID: "${SERVICE_CLIENT_ID:-telegram-bot}"
@@ -150,7 +150,7 @@ services:
       TOKEN_ENC_KEY: "${TOKEN_ENC_KEY:-}"
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_BOT_MODE: "${TELEGRAM_BOT_MODE:-webhook}"
-      TELEGRAM_WEBHOOK_URL: "${APP_URL:-http://localhost}/telegram/webhook"
+      TELEGRAM_WEBHOOK_URL: "${TELEGRAM_WEBHOOK_URL:-${APP_URL:-https://xchanger-uc.xyz}/telegram/webhook}"
       TELEGRAM_WEBHOOK_SECRET: "${TELEGRAM_WEBHOOK_SECRET:-dev-webhook-secret}"
     depends_on:
       bot-db:

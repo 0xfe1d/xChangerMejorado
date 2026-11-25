@@ -20,9 +20,8 @@ server {
     error_log  /var/log/nginx/error.log warn;
 
     # ── API REST ──────────────────────────────────────────────
-    # Escalado §12.2: la infraestructura interna de servicios nunca se expone
-    # (credenciales de servicio y JWKS solo por la red Docker privada)
-    location ~ ^/api(/v1)?/(service-auth|internal)(/|$) {
+    # Escalado §12.2: el endpoint interno de JWKS (/internal) nunca se expone
+    location ~ ^/api(/v1)?/internal(/|$) {
         return 404;
     }
 
