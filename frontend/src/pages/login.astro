@@ -3,10 +3,14 @@ import AuthLayout from '../layouts/AuthLayout.astro';
 import { serverApi, type UserMe } from '../lib/api';
 const api = serverApi(Astro.request);
 
+// Solo rutas internas como destino tras el login (evita redirecciones abiertas)
+const rawNext = Astro.url.searchParams.get('next') ?? '';
+const next = rawNext.startsWith('/') && !rawNext.startsWith('//') && !rawNext.startsWith('/login') ? rawNext : '/dashboard';
+
 // Redirigir si ya está autenticado
 try {
   await api.get<UserMe>('/auth/me');
-  return Astro.redirect('/dashboard');
+  return Astro.redirect(next);
 } catch {
   // No autenticado → mostrar login
 }
@@ -54,7 +58,7 @@ try {
       </div>
     </div>
 
-    <form id="login-form" novalidate class="space-y-5">
+    <form id="login-form" novalidate class="space-y-5" data-next={next}>
       <div>
         <label for="email" class="mb-1.5 block text-sm font-medium text-gray-700">
           Email institucional
@@ -99,6 +103,12 @@ try {
         <p id="password-error" class="mt-1 hidden text-xs text-red-600"></p>
       </div>
 
+      <label for="remember-me" class="flex cursor-pointer select-none items-center gap-2 text-sm text-gray-700">
+        <input id="remember-me" name="rememberMe" type="checkbox"
+               class="h-4 w-4 rounded border-gray-300 text-brand focus:ring-brand/40" />
+        Recordar inicio de sesión durante 30 días
+      </label>
+
       <div class="flex items-center justify-between">
         <button type="submit" id="submit-btn" class="btn-primary flex-1">
           Iniciar sesión
@@ -111,7 +121,26 @@ try {
       </p>
     </form>
 
-    <p class="mt-6 text-center text-sm text-gray-500">
+    <!-- Segundo paso: verificación en dos pasos (MFA) -->
+    <form id="mfa-form" novalidate class="hidden space-y-5">
+      <div class="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        <span id="mfa-hint-app">Abre tu app de autenticación (Microsoft Authenticator, Google Authenticator…) e introduce el código de 6 dígitos de xChanger.</span>
+        <span id="mfa-hint-recovery" class="hidden">Introduce uno de tus códigos de recuperación (formato XXXXX-XXXXX). Cada código solo se puede usar una vez.</span>
+      </div>
+      <div>
+        <label id="mfa-code-label" for="mfa-code" class="mb-1.5 block text-sm font-medium text-gray-700">Código de verificación</label>
+        <input id="mfa-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7"
+               placeholder="123456" class="input-field text-center text-lg tracking-widest" />
+        <p id="mfa-error" class="mt-1 hidden text-xs text-red-600"></p>
+      </div>
+      <button type="submit" id="mfa-submit" class="btn-primary w-full">Verificar</button>
+      <div class="flex items-center justify-between text-sm">
+        <button type="button" id="mfa-back" class="font-medium text-gray-500 hover:underline">← Volver</button>
+        <button type="button" id="mfa-toggle" class="font-medium text-brand hover:underline">Usar un código de recuperación</button>
+      </div>
+    </form>
+
+    <p id="register-link" class="mt-6 text-center text-sm text-gray-500">
       ¿No tienes cuenta?{' '}
       <a href="/register" class="font-medium text-brand hover:underline">
         Regístrate
@@ -167,7 +196,7 @@ try {
 </AuthLayout>
 
 <script>
-  import { api, ApiError } from '../lib/api';
+  import { api, ApiError, refreshSession } from '../lib/api';
 
   const form = document.getElementById('login-form') as HTMLFormElement;
   const submitBtn = document.getElementById('submit-btn') as HTMLButtonElement;
@@ -177,6 +206,12 @@ try {
   const blockedUntil = document.getElementById('blocked-until')!;
   const blockedClose = document.getElementById('blocked-close')!;
   const togglePwd = document.getElementById('toggle-password')!;
+  const rememberInput = document.getElementById('remember-me') as HTMLInputElement;
+  const nextUrl = form.dataset.next || '/dashboard';
+
+  // "Recordar inicio de sesión": si la cookie de refresco sigue viva, se renueva
+  // la sesión sin pedir credenciales y se vuelve a la página de origen.
+  refreshSession().then((ok) => { if (ok) window.location.replace(nextUrl); });
   const passwordInput = document.getElementById('password') as HTMLInputElement;
 
   // Toggle visibilidad contraseña
@@ -235,8 +270,12 @@ try {
     submitBtn.textContent = 'Iniciando sesión…';
 
     try {
-      await api.post('/auth/login', { email, password });
-      window.location.href = '/dashboard';
+      const res = await api.post<{ mfaRequired?: boolean }>('/auth/login', { email, password, rememberMe: rememberInput.checked });
+      if (res?.mfaRequired) {
+        showMfaStep();
+        return;
+      }
+      window.location.href = nextUrl;
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 403) {
@@ -256,6 +295,103 @@ try {
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Iniciar sesión';
+    }
+  });
+
+  // ── Segundo factor (MFA) ─────────────────────────────────
+  const mfaForm      = document.getElementById('mfa-form') as HTMLFormElement;
+  const mfaCode      = document.getElementById('mfa-code') as HTMLInputElement;
+  const mfaError     = document.getElementById('mfa-error')!;
+  const mfaSubmit    = document.getElementById('mfa-submit') as HTMLButtonElement;
+  const mfaToggle    = document.getElementById('mfa-toggle')!;
+  const mfaBack      = document.getElementById('mfa-back')!;
+  const mfaLabel     = document.getElementById('mfa-code-label')!;
+  const hintApp      = document.getElementById('mfa-hint-app')!;
+  const hintRecovery = document.getElementById('mfa-hint-recovery')!;
+  const registerLink = document.getElementById('register-link')!;
+  let useRecovery = false;
+
+  function setMfaMode(recovery: boolean) {
+    useRecovery = recovery;
+    hintApp.classList.toggle('hidden', recovery);
+    hintRecovery.classList.toggle('hidden', !recovery);
+    mfaLabel.textContent = recovery ? 'Código de recuperación' : 'Código de verificación';
+    mfaToggle.textContent = recovery ? 'Usar el código de la app' : 'Usar un código de recuperación';
+    mfaCode.inputMode = recovery ? 'text' : 'numeric';
+    mfaCode.maxLength = recovery ? 11 : 7;
+    mfaCode.placeholder = recovery ? 'XXXXX-XXXXX' : '123456';
+    mfaCode.value = '';
+    mfaError.classList.add('hidden');
+    mfaCode.focus();
+  }
+
+  function showMfaStep() {
+    form.classList.add('hidden');
+    registerLink.classList.add('hidden');
+    mfaForm.classList.remove('hidden');
+    setMfaMode(false);
+  }
+
+  function backToLogin() {
+    mfaForm.classList.add('hidden');
+    form.classList.remove('hidden');
+    registerLink.classList.remove('hidden');
+    passwordInput.value = '';
+    passwordInput.focus();
+  }
+
+  mfaToggle.addEventListener('click', () => setMfaMode(!useRecovery));
+  mfaBack.addEventListener('click', backToLogin);
+
+  mfaForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    mfaError.classList.add('hidden');
+    const value = mfaCode.value.trim();
+    if (!useRecovery && !/^\d{3}\s?\d{3}$/.test(value)) {
+      mfaError.textContent = 'El código debe tener 6 dígitos.';
+      mfaError.classList.remove('hidden');
+      return;
+    }
+    if (useRecovery && !/^[0-9A-Za-z]{5}-?[0-9A-Za-z]{5}$/.test(value)) {
+      mfaError.textContent = 'El código de recuperación tiene el formato XXXXX-XXXXX.';
+      mfaError.classList.remove('hidden');
+      return;
+    }
+
+    mfaSubmit.disabled = true;
+    mfaSubmit.textContent = 'Verificando…';
+    try {
+      await api.post('/auth/mfa/challenge', useRecovery ? { recoveryCode: value } : { code: value.replace(/\s+/g, '') });
+      window.location.href = nextUrl;
+    } catch (err) {
+      if (err instanceof ApiError) {
+        const data = err.data as { code?: string; details?: { remainingAttempts?: number; retryAfter?: number } } | undefined;
+        if (data?.code === 'MFA_CHALLENGE_EXPIRED') {
+          backToLogin();
+          errorBanner.textContent = 'La verificación ha caducado. Vuelve a iniciar sesión.';
+          errorBanner.classList.remove('hidden');
+          return;
+        }
+        if (err.status === 403) {
+          const d = err.data as { detail?: { reason: string; permanent: boolean; blockedUntil: string | null } };
+          backToLogin();
+          if (d?.detail) showBlockedModal(d.detail);
+          return;
+        }
+        let msg = err.message || 'Código incorrecto.';
+        const remaining = data?.details?.remainingAttempts;
+        if (data?.code === 'MFA_INVALID_CODE' && typeof remaining === 'number') {
+          msg = remaining > 0 ? `Código incorrecto. Te quedan ${remaining} intento(s).` : 'Código incorrecto. No quedan intentos.';
+        }
+        if (data?.code === 'MFA_LOCKED' && data.details?.retryAfter) {
+          msg = `${err.message} Inténtalo de nuevo en ${Math.ceil(data.details.retryAfter / 60)} min.`;
+        }
+        mfaError.textContent = msg;
+        mfaError.classList.remove('hidden');
+      }
+    } finally {
+      mfaSubmit.disabled = false;
+      mfaSubmit.textContent = 'Verificar';
     }
   });
 

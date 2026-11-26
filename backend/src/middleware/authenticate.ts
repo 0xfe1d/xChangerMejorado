@@ -20,6 +20,8 @@ export interface AccessTokenPayload {
   auth_time?: number;
   /** Momento (s) de la última reautenticación (EP-C-27). */
   reauth_at?: number;
+  /** Sesión iniciada con "Recordar inicio de sesión" (refresh de larga duración). */
+  rem?: boolean;
 }
 
 /** Payload del Access Token de canal (EP-C-06). Firmado con JWT_CHANNEL_SECRET. */

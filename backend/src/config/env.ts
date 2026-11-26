@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { durationToMs } from '../utils/duration';
 
 // Valida y tipifica todas las variables de entorno al arranque (ADR-13, RCF-02).
 // Si falta alguna variable crítica, el proceso termina con un error claro.
@@ -34,6 +35,8 @@ const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(32),
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+  // Sesión con "Recordar inicio de sesión": refresh token y su cookie duran esto
+  JWT_REFRESH_REMEMBER_EXPIRES_IN: z.string().default('30d'),
   JWT_OTP_EXPIRES_IN: z.string().default('30m'),
 
   // ── Sesiones de canal (ADR-18) ────────────────────────────────
@@ -62,6 +65,9 @@ const envSchema = z.object({
   // ── Cliente del mfa-service (ADR-23) ──────────────────────────
   MFA_SERVICE_URL: z.string().url().default('http://mfa:8081'),
   MFA_TIMEOUT_MS: z.coerce.number().int().positive().default(2000),
+  // AR-01: en producción el alta de MFA (QR con el secreto) exige HTTPS.
+  // Solo se desactiva para pruebas locales en http://localhost.
+  MFA_REQUIRE_HTTPS: boolFromString('true'),
 
   // ── Proxy y cookies ───────────────────────────────────────────
   // Número de saltos de proxy de confianza (Nginx = 1). Resuelve AR-02 con req.ip.
@@ -84,7 +90,15 @@ const envSchema = z.object({
   SMTP_FROM: z.string().email(),
 });
 
-const parsed = envSchema.safeParse(process.env);
+const parsed = envSchema
+  .superRefine((e, ctx) => {
+    for (const k of ['JWT_ACCESS_EXPIRES_IN', 'JWT_REFRESH_EXPIRES_IN', 'JWT_REFRESH_REMEMBER_EXPIRES_IN'] as const) {
+      if (durationToMs(e[k]) === null) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [k], message: 'Duración inválida (usa p. ej. 15m, 7d, 30d)' });
+      }
+    }
+  })
+  .safeParse(process.env);
 
 if (!parsed.success) {
   console.error('❌  Variables de entorno inválidas o faltantes:');

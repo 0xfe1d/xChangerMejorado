@@ -1,0 +1,17 @@
+{
+  "name": "xchanger-mfa-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "mfa-service de xChanger: TOTP estándar (RFC 6238) compatible con Microsoft Authenticator",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "jose": "5.9.6",
+    "pg": "8.13.1"
+  }
+}

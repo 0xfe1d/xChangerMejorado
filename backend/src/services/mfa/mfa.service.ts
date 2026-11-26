@@ -49,7 +49,7 @@ export async function getStatus(userId: string) {
 
 export async function startEnrollment(userId: string, opts: { secureTransport: boolean }) {
   // AR-01: el QR contiene el secreto; nunca se emite por HTTP en producción
-  if (env.NODE_ENV === 'production' && !opts.secureTransport) {
+  if (env.NODE_ENV === 'production' && env.MFA_REQUIRE_HTTPS && !opts.secureTransport) {
     throw new AppError(403, 'La activación de MFA requiere una conexión segura (HTTPS)', 'HTTPS_REQUIRED');
   }
   const user = await loadUser(userId);
@@ -72,7 +72,7 @@ export async function startEnrollment(userId: string, opts: { secureTransport: b
 
 // ── EP-C-22: confirmar ────────────────────────────────────────
 
-export async function confirmEnrollment(userId: string, enrollmentId: string, code: string) {
+export async function confirmEnrollment(userId: string, enrollmentId: string, code: string, remember = false) {
   const user = await loadUser(userId);
   if (user.mfaEnabled) throw new AppError(409, 'La verificación en dos pasos ya está activada', 'MFA_ALREADY_ENABLED');
 
@@ -99,7 +99,7 @@ export async function confirmEnrollment(userId: string, enrollmentId: string, co
   });
 
   // §7.2.4: se rota la sesión actual
-  const tokens = await issueWebSession(updated);
+  const tokens = await issueWebSession(updated, undefined, remember);
   return { recoveryCodes: r.recoveryCodes, tokens };
 }
 

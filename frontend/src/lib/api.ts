@@ -24,9 +24,32 @@ interface RequestOptions extends Omit<RequestInit, 'body'> {
  * - credentials: 'include' garantiza que las cookies HttpOnly viajen en cada petición.
  * - Lanza ApiError con el status y el cuerpo de error para manejo uniforme en UI.
  */
+// ── Renovación de sesión (solo navegador) ─────────────────────
+// La cookie refresh_token solo viaja a /api/auth/refresh (RF-AUT-11), así que
+// el SSR no puede renovar la sesión: lo hace el navegador al recibir un 401.
+
+/** Códigos de 401 que indican sesión caducada o ausente (no credenciales erróneas). */
+const SESSION_CODES = new Set(['TOKEN_EXPIRED', 'UNAUTHORIZED', 'INVALID_TOKEN']);
+/** Endpoints cuyo 401 nunca debe disparar una renovación. */
+const NO_REFRESH = ['/auth/login', '/auth/refresh', '/auth/logout', '/auth/mfa/challenge', '/auth/register', '/auth/verify-otp', '/auth/reauthenticate'];
+
+let refreshing: Promise<boolean> | null = null;
+
+/** Pide un access token nuevo con la cookie de refresco. Una sola petición en vuelo. */
+export function refreshSession(): Promise<boolean> {
+  if (!refreshing) {
+    refreshing = fetch(`${BASE_URL}/api/auth/refresh`, { method: 'POST', credentials: 'include' })
+      .then((r) => r.ok)
+      .catch(() => false)
+      .finally(() => { refreshing = null; });
+  }
+  return refreshing;
+}
+
 export async function apiFetch<T = unknown>(
   path: string,
   options: RequestOptions = {},
+  retried = false,
 ): Promise<T> {
   const { body, headers, ...rest } = options;
 
@@ -43,6 +66,16 @@ export async function apiFetch<T = unknown>(
   if (!res.ok) {
     let data: unknown;
     try { data = await res.json(); } catch { /* texto plano */ }
+
+    const code = (data as { code?: string } | undefined)?.code;
+    if (
+      res.status === 401 && !retried && typeof window !== 'undefined' &&
+      SESSION_CODES.has(code ?? '') && !NO_REFRESH.some((p) => path.startsWith(p)) &&
+      (await refreshSession())
+    ) {
+      return apiFetch<T>(path, options, true);
+    }
+
     const message =
       (data as { error?: string } | undefined)?.error ??
       `Error ${res.status}`;

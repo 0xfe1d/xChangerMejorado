@@ -72,7 +72,7 @@ Tanto el usuario como el administrador tienen la capacidad de cerrar el ticket.
 Los tickets cerrados ya no aparecerán en la sección de tickets del administrador (solo aparecen los tickets abiertos en esta sección).
 Habrá una opción en la sección de ver tickets que permitirá ir a una nueva pestaña y permitirá filtrar tickets ya cerrados por asunto y/o por usuario.
 Cada vez que se envía un mensaje le llegará una notificación al usuario que creó el ticket.
-En el footer de la aplicación aparecerá el logo de la universidad de cantabria (se dejará en la carpeta de resources) así como “creado por Asier Del Cid Pérez” y un aviso de que esta web no tiene ningún valor oficial ni ha sido creada por la Universidad de Cantabria, su uso tiene como objetivo simplemente coordinar al alumnado.
+En el footer de la aplicación aparecerá el logo de la universidad de cantabria (se dejará en la carpeta de resources) y un aviso de que esta web no tiene ningún valor oficial ni ha sido creada por la Universidad de Cantabria, su uso tiene como objetivo simplemente coordinar al alumnado.
 Al igual que habrá un footer en cada pestaña del sistema con esos requisitos habrá un navbar (excepto en las pestañas de login y registro) conformado por un símbolo de usuario en la parte derecha. Si lo presionas sin haber iniciado sesión te llevará a iniciar sesión. Si lo presionas habiendo iniciado sesión te mostrará un desplegable con las opciones: ir al panel de usuario, ir a ajustes, ir a administración (solo si tienes acciones de administrador).
 La contraseña debe guardarse en la base de datos bajo un hash seguro utilizando bcrypt.
 El sistema no debe ser vulnerable a inyecciones SQL ni ninguna otra vulnerabilidad del OWASP.

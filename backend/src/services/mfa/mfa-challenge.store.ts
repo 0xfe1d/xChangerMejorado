@@ -6,13 +6,20 @@ export const MFA_CHALLENGE_MAX_ATTEMPTS = 5;
 
 const key = (jti: string) => `mfa:chal:${jti}`;
 
-export async function createChallenge(jti: string, userId: string): Promise<void> {
-  await getRedis().set(key(jti), JSON.stringify({ userId, attempts: 0 }), 'EX', MFA_CHALLENGE_TTL_SECONDS);
+export interface ChallengeState {
+  userId: string;
+  attempts: number;
+  /** "Recordar inicio de sesión" elegido en el primer paso; se aplica al emitir la sesión. */
+  remember?: boolean;
 }
 
-export async function getChallenge(jti: string): Promise<{ userId: string; attempts: number } | null> {
+export async function createChallenge(jti: string, userId: string, remember = false): Promise<void> {
+  await getRedis().set(key(jti), JSON.stringify({ userId, attempts: 0, remember }), 'EX', MFA_CHALLENGE_TTL_SECONDS);
+}
+
+export async function getChallenge(jti: string): Promise<ChallengeState | null> {
   const raw = await getRedis().get(key(jti));
-  return raw ? (JSON.parse(raw) as { userId: string; attempts: number }) : null;
+  return raw ? (JSON.parse(raw) as ChallengeState) : null;
 }
 
 /** Registra un fallo; al llegar al máximo el reto se invalida. Devuelve los intentos restantes. */
